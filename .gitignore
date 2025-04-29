@@ -1,0 +1,85 @@
+# Python相關
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 模型權重與輸出
+outputs/
+*.h5
+*.pth
+*.pt
+*.pb
+*.onnx
+*.tflite
+*.weights
+*.bin
+*.ckpt*
+*.safetensors
+
+# 日誌與輸出資料
+logs/
+*.log
+*/events.out.tfevents.*
+*.csv
+outputs/charts/
+outputs/logs/
+outputs/weights/
+
+# 暫存檔
+.temp/
+tmp/
+temp/
+
+# 編輯器與IDE相關
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+.ipynb_checkpoints/
+
+# 資料集相關 (通常不應該提交原始資料)
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.tif
+*.tiff
+*.xml
+*.txt
+*.json
+
+# 例外：保留示例配置文件
+!config/*.yaml
+!requirements.txt
+!README.md
+
+# 大型數據檔案
+*.npy
+*.npz
+*.hdf5
+*.h5
+
+# 本地環境配置
+.env
+.venv
+venv/
+ENV/

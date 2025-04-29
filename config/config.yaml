@@ -1,0 +1,133 @@
+#!/usr/bin/env python
+# -*- coding:utf-8 -*-
+"""
+config.yaml - PCB缺陷檢測知識蒸餾增強型混合模型配置檔案
+整合全局和模型配置，提供完整的參數設定。
+"""
+
+# 基本路徑配置
+paths:
+  dataset: "C:/Users/a/Desktop/研討會/PCB_DATASET"
+  images: "C:/Users/a/Desktop/研討會/PCB_DATASET/images"
+  annotations: "C:/Users/a/Desktop/研討會/PCB_DATASET/Annotations"
+  rotation: "C:/Users/a/Desktop/研討會/PCB_DATASET/rotation"
+  output: "C:/Users/a/Desktop/研討會/code/PCB_Defect_Detection/outputs"
+  weights: "C:/Users/a/Desktop/研討會/code/PCB_Defect_Detection/outputs/weights"
+  logs: "C:/Users/a/Desktop/研討會/code/PCB_Defect_Detection/outputs/logs"
+
+# 資料集配置
+dataset:
+  defect_classes: ["Missing_hole", "Mouse_bite", "Spur", "Spurious_copper", "Open_circuit", "Short"]
+  train_ratio: 0.8
+  val_ratio: 0.1
+  test_ratio: 0.1
+  input_size: [416, 416]  # [高, 寬]
+  batch_size: 8
+  num_workers: 4
+
+# 資料增強設定
+augmentation:
+  use_rotation: true
+  use_flip: true
+  brightness_contrast: true
+  hsv_aug: true
+  mosaic_prob: 0.2
+  mixup_prob: 0.15
+  min_rotation: -15
+  max_rotation: 15
+
+# 訓練配置
+training:
+  epochs: 100
+  early_stop_patience: 15
+  learning_rate: 0.001
+  weight_decay: 0.0005
+  lr_scheduler: "cosine"  # 選項: "step", "cosine", "reduce_on_plateau"
+  scheduler_params:
+    step_size: 30
+    gamma: 0.1
+    min_lr: 0.00001
+  optimizer: "adamw"  # 選項: "sgd", "adam", "adamw"
+  momentum: 0.9  # 僅用於SGD
+  amp_training: true  # 混合精度訓練
+
+# 知識蒸餾設定
+distillation:
+  enabled: true
+  temperature: 3.0
+  alpha: 0.5  # 蒸餾損失權重
+  beta: 0.5   # 任務損失權重
+  feature_layers: ["layer1", "layer2", "layer3"]  # 特徵蒸餾的層
+  feature_loss_weights: [0.1, 0.2, 0.3]  # 各層特徵蒸餾的權重
+
+# 模型配置
+model:
+  # 教師模型配置
+  teacher:
+    type: "fasterrcnn"  # 可選: "fasterrcnn", "yolov5", "retinanet"
+    backbone: "resnet50"  # 可選: "resnet50", "resnet101", "efficientnet"
+    pretrained: true
+    freeze_backbone: false
+    roi_align_output_size: 7
+    rpn_pre_nms_top_n_train: 2000
+    rpn_pre_nms_top_n_test: 1000
+    rpn_post_nms_top_n_train: 2000
+    rpn_post_nms_top_n_test: 1000
+    rpn_nms_thresh: 0.7
+    rpn_fg_iou_thresh: 0.7
+    rpn_bg_iou_thresh: 0.3
+    box_score_thresh: 0.05
+    box_nms_thresh: 0.5
+    box_detections_per_img: 100
+    box_fg_iou_thresh: 0.5
+    box_bg_iou_thresh: 0.5
+
+  # 學生模型配置
+  student:
+    type: "hybrid"  # 自定義輕量化架構
+    backbone: "mobilenetv3_small"  # 可選: "mobilenetv3_small", "efficientnet_lite0"
+    pretrained: true
+    neck: "fpn"
+    fpn_channels: 96
+    head_channels: 96
+    num_fpn_layers: 3
+    dual_branch: true  # 是否使用雙分支架構
+    use_attention: true  # 是否使用注意力機制
+    attention_type: "cbam"  # 可選: "cbam", "se", "defect_specific"
+    shared_parameters: true  # 參數共享以減少模型大小
+
+# 邊緣部署優化配置
+deploy:
+  quantization:
+    enabled: true
+    precision: "int8"  # 可選: "int8", "fp16"
+    calibration_method: "min_max"  # 可選: "min_max", "kl_divergence"
+    
+  pruning:
+    enabled: true
+    method: "magnitude"  # 可選: "magnitude", "l1_norm"
+    sparsity: 0.5  # 稀疏率
+    
+  graph_optimization:
+    enabled: true
+    fold_constants: true
+    eliminate_identity: true
+    
+  target_device: "jetson_nano"  # 可選: "jetson_nano", "raspberry_pi", "cpu"
+
+# 評估配置
+evaluation:
+  conf_threshold: 0.25
+  iou_threshold: 0.5
+  min_precision: 0.8
+  min_recall: 0.8
+  eval_interval: 5  # 每隔多少個epoch評估一次
+  save_best: true
+  best_metric: "mAP"  # 可選: "mAP", "F1"
+
+# 日誌和可視化設定
+logging:
+  tensorboard: true
+  log_interval: 50  # 每隔多少個batch記錄一次
+  save_interval: 10  # 每隔多少個epoch保存一次模型
+  visualize_examples: 5  # 每個epoch視覺化多少個樣本
