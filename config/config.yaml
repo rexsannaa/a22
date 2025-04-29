@@ -2,10 +2,12 @@
 # -*- coding:utf-8 -*-
 """
 config.yaml - PCB缺陷檢測知識蒸餾增強型混合模型配置檔案
-整合全局和模型配置，提供完整的參數設定。
+整合全局配置、資料處理、模型架構與部署優化參數。
 """
 
+# ====================
 # 基本路徑配置
+# ====================
 paths:
   dataset: "C:/Users/a/Desktop/研討會/PCB_DATASET"
   images: "C:/Users/a/Desktop/研討會/PCB_DATASET/images"
@@ -15,7 +17,9 @@ paths:
   weights: "C:/Users/a/Desktop/研討會/code/PCB_Defect_Detection/outputs/weights"
   logs: "C:/Users/a/Desktop/研討會/code/PCB_Defect_Detection/outputs/logs"
 
+# ====================
 # 資料集配置
+# ====================
 dataset:
   defect_classes: ["Missing_hole", "Mouse_bite", "Spur", "Spurious_copper", "Open_circuit", "Short"]
   train_ratio: 0.8
@@ -36,7 +40,9 @@ augmentation:
   min_rotation: -15
   max_rotation: 15
 
+# ====================
 # 訓練配置
+# ====================
 training:
   epochs: 100
   early_stop_patience: 15
@@ -51,63 +57,186 @@ training:
   momentum: 0.9  # 僅用於SGD
   amp_training: true  # 混合精度訓練
 
-# 知識蒸餾設定
-distillation:
-  enabled: true
-  temperature: 3.0
-  alpha: 0.5  # 蒸餾損失權重
-  beta: 0.5   # 任務損失權重
-  feature_layers: ["layer1", "layer2", "layer3"]  # 特徵蒸餾的層
-  feature_loss_weights: [0.1, 0.2, 0.3]  # 各層特徵蒸餾的權重
+# ====================
+# 模型架構配置
+# ====================
+architecture:
+  input_shape: [416, 416, 3]  # [高, 寬, 通道]
+  pretrained_backbone: true
+  output_strides: [8, 16, 32]  # 不同特徵層的步長
+  common_blocks: ["stem", "block1", "block2", "block3"] # 用於特徵層選擇和蒸餾參考
 
-# 模型配置
-model:
-  # 教師模型配置
-  teacher:
-    type: "fasterrcnn"  # 可選: "fasterrcnn", "yolov5", "retinanet"
-    backbone: "resnet50"  # 可選: "resnet50", "resnet101", "efficientnet"
-    pretrained: true
-    freeze_backbone: false
+# ====================
+# 教師模型配置
+# ====================
+teacher:
+  model_type: "fasterrcnn"
+  backbone: "resnet50"
+  pretrained: true
+  freeze_backbone: false
+  
+  # 特徵金字塔網路配置
+  fpn:
+    out_channels: 256
+    extra_blocks: "lastlevel_maxpool"
+  
+  # 區域提議網路配置
+  rpn:
+    anchor_sizes: [32, 64, 128, 256, 512]
+    aspect_ratios: [0.5, 1.0, 2.0]
+    fg_iou_thresh: 0.7
+    bg_iou_thresh: 0.3
+    batch_size_per_image: 256
+    positive_fraction: 0.5
     roi_align_output_size: 7
     rpn_pre_nms_top_n_train: 2000
     rpn_pre_nms_top_n_test: 1000
     rpn_post_nms_top_n_train: 2000
     rpn_post_nms_top_n_test: 1000
     rpn_nms_thresh: 0.7
-    rpn_fg_iou_thresh: 0.7
-    rpn_bg_iou_thresh: 0.3
-    box_score_thresh: 0.05
-    box_nms_thresh: 0.5
-    box_detections_per_img: 100
-    box_fg_iou_thresh: 0.5
-    box_bg_iou_thresh: 0.5
+  
+  # 檢測頭配置
+  roi_heads:
+    box_head_dim: 1024
+    num_classes: 7  # 背景 + 6種缺陷
+    score_thresh: 0.05
+    nms_thresh: 0.5
+    detections_per_img: 100
+    fg_iou_thresh: 0.5
+    bg_iou_thresh: 0.5
+  
+  # 損失權重
+  loss_weights:
+    rpn_cls: 1.0
+    rpn_reg: 1.0
+    box_cls: 1.0
+    box_reg: 1.0
 
-  # 學生模型配置
-  student:
-    type: "hybrid"  # 自定義輕量化架構
-    backbone: "mobilenetv3_small"  # 可選: "mobilenetv3_small", "efficientnet_lite0"
-    pretrained: true
-    neck: "fpn"
-    fpn_channels: 96
-    head_channels: 96
-    num_fpn_layers: 3
-    dual_branch: true  # 是否使用雙分支架構
-    use_attention: true  # 是否使用注意力機制
-    attention_type: "cbam"  # 可選: "cbam", "se", "defect_specific"
-    shared_parameters: true  # 參數共享以減少模型大小
+# ====================
+# 學生模型配置
+# ====================
+student:
+  model_type: "hybrid_detector"
+  backbone: "mobilenetv3_small"
+  pretrained: true
+  channel_reduction_factor: 8  # 相比教師模型通道數的縮減倍數
+  
+  # 雙分支設定 - 全局與局部特徵提取
+  dual_branch:
+    enabled: true
+    shared_backbone: true
+    global_branch:
+      fpn_channels: 96
+      attention_type: "se"  # Squeeze-and-Excitation
+    local_branch:
+      fpn_channels: 96
+      attention_type: "defect_specific"  # 缺陷特定注意力
+  
+  # 特徵提取頸部 - 輕量化FPN設計
+  neck:
+    type: "fpn"
+    out_channels: 96
+    extra_blocks: "lastlevel_p6p7"
+    use_depthwise: true
+    
+  # 檢測頭設定 - 適應PCB小缺陷特點
+  detection_head:
+    anchor_sizes: [16, 32, 64, 128, 256]
+    aspect_ratios: [0.5, 1.0, 2.0]
+    num_classes: 7
+    box_head_dim: 256
+    use_group_norm: true
+    share_box_predictor: false
 
-# 邊緣部署優化配置
-deploy:
+# ====================
+# 知識蒸餾配置
+# ====================
+distillation:
+  enabled: true
+  temperature: 3.0
+  
+  # 損失權重平衡
+  loss_weights:
+    task_loss: 0.5  # 檢測任務損失
+    feature_loss: 0.3  # 特徵蒸餾損失
+    logit_loss: 0.2  # 邏輯蒸餾損失
+  
+  # 特徵蒸餾設定
+  feature_distillation:
+    layers: [
+      {"teacher": "layer1", "student": "features.3", "weight": 0.1},
+      {"teacher": "layer2", "student": "features.6", "weight": 0.2},
+      {"teacher": "layer3", "student": "features.9", "weight": 0.3}
+    ]
+    adaptation:
+      type: "conv1x1"  # 特徵調整方法
+      init_type: "kaiming"
+    distance: "l2"  # 特徵距離度量
+  
+  # 策略調整 - 訓練過程中的動態調整
+  schedule:
+    initial_epochs: 10  # 純任務損失的預熱訓練
+    rampup_epochs: 5  # 蒸餾權重逐步增加
+    full_kd_epochs: 85  # 完整知識蒸餾訓練
+
+# ====================
+# 注意力機制配置
+# ====================
+attention:
+  common:
+    reduction_ratio: 16
+    use_spatial: true
+  
+  # 缺陷特定注意力參數
+  defect_specific:
+    Missing_hole:
+      channel_weights: [0.3, 0.3, 0.4]  # RGB通道注意力權重
+      spatial_kernel: 7  # 空間注意力核大小
+    Mouse_bite:
+      channel_weights: [0.25, 0.35, 0.4]
+      spatial_kernel: 5
+    Spur:
+      channel_weights: [0.3, 0.4, 0.3]
+      spatial_kernel: 5
+    Spurious_copper:
+      channel_weights: [0.3, 0.4, 0.3]
+      spatial_kernel: 7
+    Open_circuit:
+      channel_weights: [0.25, 0.4, 0.35]
+      spatial_kernel: 9
+    Short:
+      channel_weights: [0.3, 0.35, 0.35]
+      spatial_kernel: 7
+
+# ====================
+# 模型壓縮與優化配置
+# ====================
+optimization:
+  # 量化設定
   quantization:
     enabled: true
-    precision: "int8"  # 可選: "int8", "fp16"
-    calibration_method: "min_max"  # 可選: "min_max", "kl_divergence"
-    
+    method: "post_training"  # 訓練後量化
+    precision: "int8"
+    per_channel: true
+    calibration_samples: 100
+    bias_correction: true
+  
+  # 剪枝設定
   pruning:
     enabled: true
-    method: "magnitude"  # 可選: "magnitude", "l1_norm"
-    sparsity: 0.5  # 稀疏率
-    
+    method: "magnitude"
+    target_sparsity: 0.5
+    schedule: "cubic"  # 剪枝調度
+    granularity: "channel"  # 通道級剪枝
+    exclude_layers: ["detection_head.classifier"]  # 不剪枝的層
+  
+  # 知識蒸餾後的額外優化
+  post_distill:
+    fine_tuning_epochs: 10
+    learning_rate: 0.0001
+    frozen_batch_norm: true
+  
+  # 圖優化
   graph_optimization:
     enabled: true
     fold_constants: true
@@ -115,7 +244,9 @@ deploy:
     
   target_device: "jetson_nano"  # 可選: "jetson_nano", "raspberry_pi", "cpu"
 
+# ====================
 # 評估配置
+# ====================
 evaluation:
   conf_threshold: 0.25
   iou_threshold: 0.5
@@ -125,7 +256,9 @@ evaluation:
   save_best: true
   best_metric: "mAP"  # 可選: "mAP", "F1"
 
+# ====================
 # 日誌和可視化設定
+# ====================
 logging:
   tensorboard: true
   log_interval: 50  # 每隔多少個batch記錄一次
