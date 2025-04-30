@@ -20,8 +20,8 @@ import yaml
 import torch
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image, ImageEnhance
-import albumentations as A
-from albumentations.pytorch import ToTensorV2
+import torchvision.transforms as T
+from torchvision.transforms import functional as F
 from sklearn.model_selection import train_test_split
 import logging
 
@@ -120,24 +120,23 @@ class PCBDefectDataset(Dataset):
         # 讀取標註
         boxes, labels = self._parse_annotation(xml_path)
         
-        # 準備增強輸入
-        sample = {
-            'image': image,
-            'bboxes': boxes,
-            'labels': labels
-        }
+        # 轉換為張量
+        image_tensor = torch.from_numpy(image.transpose(2, 0, 1)).float() / 255.0
         
-        # 應用增強
+        # 應用轉換
         if self.transform:
-            sample = self.transform(**sample)
+            image_tensor, boxes, labels = self.transform(image_tensor, boxes, labels)
+        
+        # 標準化
+        image_tensor = T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])(image_tensor)
         
         # 轉換為模型輸入格式
         target = {
-            'boxes': torch.as_tensor(sample['bboxes'], dtype=torch.float32),
-            'labels': torch.as_tensor(sample['labels'], dtype=torch.int64)
+            'boxes': torch.as_tensor(boxes, dtype=torch.float32),
+            'labels': torch.as_tensor(labels, dtype=torch.int64)
         }
         
-        return sample['image'], target, img_path
+        return image_tensor, target, img_path
     
     def _parse_annotation(self, xml_path):
         """解析XML標註檔"""
@@ -181,42 +180,108 @@ class PCBDefectDataset(Dataset):
         return boxes, labels
 
 
+class PCBTransform:
+    """PCB資料轉換類，實現資料增強和預處理"""
+    
+    def __init__(self, input_size, mode="train", config=None):
+        """
+        初始化轉換
+        
+        Args:
+            input_size: 輸入尺寸 [高, 寬]
+            mode: 模式，可選["train", "val", "test"]
+            config: 配置字典
+        """
+        self.input_size = input_size
+        self.mode = mode
+        self.config = config
+        
+        # 訓練時使用數據增強
+        self.use_augmentation = mode == "train" and config is not None
+    
+    def __call__(self, image, boxes, labels):
+        """
+        應用轉換
+        
+        Args:
+            image: 圖像張量 [C, H, W]
+            boxes: 邊界框列表 [[x1, y1, x2, y2], ...]
+            labels: 標籤列表
+            
+        Returns:
+            轉換後的圖像和標註
+        """
+        # 確保輸入是張量
+        if not isinstance(image, torch.Tensor):
+            image = torch.from_numpy(image).float() / 255.0
+        
+        # 獲取原始尺寸
+        c, h, w = image.shape
+        
+        # 調整圖像大小
+        image = F.resize(image, self.input_size)
+        
+        # 調整邊界框尺寸
+        scale_x = self.input_size[1] / w
+        scale_y = self.input_size[0] / h
+        
+        new_boxes = []
+        for box in boxes:
+            x1, y1, x2, y2 = box
+            new_box = [
+                x1 * scale_x,
+                y1 * scale_y,
+                x2 * scale_x,
+                y2 * scale_y
+            ]
+            new_boxes.append(new_box)
+        
+        # 如果是訓練模式且啟用了增強
+        if self.use_augmentation and self.mode == "train":
+            # 水平翻轉
+            if random.random() < 0.5 and self.config["augmentation"]["use_flip"]:
+                image = F.hflip(image)
+                for i, box in enumerate(new_boxes):
+                    x1, y1, x2, y2 = box
+                    new_boxes[i] = [self.input_size[1] - x2, y1, self.input_size[1] - x1, y2]
+            
+            # 垂直翻轉
+            if random.random() < 0.3 and self.config["augmentation"]["use_flip"]:
+                image = F.vflip(image)
+                for i, box in enumerate(new_boxes):
+                    x1, y1, x2, y2 = box
+                    new_boxes[i] = [x1, self.input_size[0] - y2, x2, self.input_size[0] - y1]
+            
+            # 亮度和對比度調整
+            if random.random() < 0.5 and self.config["augmentation"]["brightness_contrast"]:
+                brightness_factor = random.uniform(0.8, 1.2)
+                contrast_factor = random.uniform(0.8, 1.2)
+                image = F.adjust_brightness(image, brightness_factor)
+                image = F.adjust_contrast(image, contrast_factor)
+            
+            # 色調和飽和度調整
+            if random.random() < 0.3 and self.config["augmentation"]["hsv_aug"]:
+                hue_factor = random.uniform(-0.1, 0.1)
+                saturation_factor = random.uniform(0.8, 1.2)
+                image = F.adjust_hue(image, hue_factor)
+                image = F.adjust_saturation(image, saturation_factor)
+        
+        return image, new_boxes, labels
+
+
 def create_transforms(config, mode="train"):
     """
-    創建資料轉換和增強管道
+    創建資料轉換
     
     Args:
         config: 配置字典
         mode: 轉換模式，可選["train", "val", "test"]
     
     Returns:
-        albumentations轉換管道
+        轉換函數
     """
     input_size = config["dataset"]["input_size"]
-    
-    if mode == "train":
-        # 訓練時使用更多增強
-        return A.Compose([
-            A.Resize(height=input_size[0], width=input_size[1]),
-            A.HorizontalFlip(p=0.5 if config["augmentation"]["use_flip"] else 0),
-            A.VerticalFlip(p=0.3 if config["augmentation"]["use_flip"] else 0),
-            A.RandomRotate90(p=0.5 if config["augmentation"]["use_rotation"] else 0),
-            A.RandomBrightnessContrast(
-                p=0.5 if config["augmentation"]["brightness_contrast"] else 0
-            ),
-            A.HueSaturationValue(
-                p=0.3 if config["augmentation"]["hsv_aug"] else 0
-            ),
-            A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ToTensorV2()
-        ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['labels']))
-    else:
-        # 驗證和測試時僅做基本轉換
-        return A.Compose([
-            A.Resize(height=input_size[0], width=input_size[1]),
-            A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ToTensorV2()
-        ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['labels']))
+    return PCBTransform(input_size, mode, config)
 
 
 def create_dataloaders(config):
