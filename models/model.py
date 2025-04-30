@@ -543,6 +543,7 @@ class TeacherModel(nn.Module):
             
             # 創建特徵提取器
             self.backbone = BackboneWithBatchNorm(backbone, return_layers)
+            self.backbone.out_channels = teacher_cfg["fpn"]["out_channels"]
             
             # 特徵金字塔網絡
             in_channels_list = [backbone_out_channels[k] for k in ["layer1", "layer2", "layer3", "layer4"]]
@@ -567,7 +568,7 @@ class TeacherModel(nn.Module):
                     ]
                 )
             )
-            
+            self.out_channels = teacher_cfg["fpn"]["out_channels"]
             # 構建FasterRCNN
             # 定義錨點生成器
             anchor_sizes = teacher_cfg["rpn"]["anchor_sizes"]
