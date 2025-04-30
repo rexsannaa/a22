@@ -938,13 +938,21 @@ class FeaturePyramidNetwork(nn.Module):
     
     def forward(self, x):
         """前向傳播"""
+        # 檢查輸入類型
+        if isinstance(x, dict):
+            # 如果輸入是字典，轉換為列表
+            x_list = [x[k] for k in sorted(x.keys())]
+        else:
+            # 如果已經是列表或元組
+            x_list = x
+        
         # 從底到頂處理特徵
-        last_inner = self.inner_blocks[-1](x[-1])
+        last_inner = self.inner_blocks[-1](x_list[-1])
         results = [self.layer_blocks[-1](last_inner)]
         
         # 從上到下處理其他特徵
-        for idx in range(len(x) - 2, -1, -1):
-            inner_lateral = self.inner_blocks[idx](x[idx])
+        for idx in range(len(x_list) - 2, -1, -1):
+            inner_lateral = self.inner_blocks[idx](x_list[idx])
             feat_shape = inner_lateral.shape[-2:]
             inner_top_down = F.interpolate(last_inner, size=feat_shape, mode="nearest")
             last_inner = inner_lateral + inner_top_down
