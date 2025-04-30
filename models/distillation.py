@@ -349,7 +349,7 @@ class DistillationTrainer:
         
         Args:
             model: 模型
-            images: 輸入圖像
+            images: 輸入圖像列表
             is_teacher: 是否為教師模型
         
         Returns:
@@ -357,11 +357,22 @@ class DistillationTrainer:
         """
         features = {}
         
+        # 將圖像列表轉換為批次張量
+        # 確保所有圖像大小一致，這是必要的步驟
+        if isinstance(images, list):
+            # 使用第一張圖像的形狀
+            batch_size = len(images)
+            img_shape = images[0].shape
+            batched_images = torch.stack(images)
+        else:
+            # 已經是張量，直接使用
+            batched_images = images
+        
         # 對於教師模型 (ResNet特徵提取)
         if is_teacher and hasattr(model, 'backbone') and hasattr(model.backbone, 'body'):
             with torch.no_grad():
                 # 提取骨幹網絡的特徵
-                body_features = model.backbone.body(images)
+                body_features = model.backbone.body(batched_images)
                 for name, feat in body_features.items():
                     if name == '0':
                         features['layer1'] = feat
@@ -375,7 +386,7 @@ class DistillationTrainer:
         # 對於學生模型 (MobileNet特徵提取)
         elif hasattr(model, 'backbone') and hasattr(model.backbone, 'features'):
             # 提取學生模型特徵
-            x = images
+            x = batched_images
             for name, module in model.backbone.features._modules.items():
                 x = module(x)
                 feature_name = f"features.{name}"
@@ -389,7 +400,7 @@ class DistillationTrainer:
         執行一個訓練步驟
         
         Args:
-            images: 輸入圖像
+            images: 輸入圖像列表
             targets: 目標標註
             epoch: 當前訓練輪次
         
@@ -405,6 +416,7 @@ class DistillationTrainer:
         # 提取教師特徵和輸出 (不計算梯度)
         with torch.no_grad():
             teacher_features = self._extract_features(self.teacher_model, images, is_teacher=True)
+            # 確保教師模型接收正確格式的輸入
             teacher_outputs = self.teacher_model(images)
         
         # 使用混合精度訓練
