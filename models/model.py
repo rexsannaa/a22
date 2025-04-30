@@ -22,12 +22,28 @@ try:
     # 嘗試從舊位置導入
     from torchvision.ops import misc as misc_nn_ops
     IntermediateLayerGetter = misc_nn_ops.IntermediateLayerGetter
+    LastLevelMaxPool = misc_nn_ops.LastLevelMaxPool
 except AttributeError:
     # 如果失敗，從新位置導入
     from torchvision.models._utils import IntermediateLayerGetter
+    # 對於 LastLevelMaxPool，我們需要檢查它是否在 feature_pyramid_network 模組中
+    try:
+        from torchvision.ops.feature_pyramid_network import LastLevelMaxPool
+    except (ImportError, AttributeError):
+        # 如果找不到，我們自己定義一個
+        class LastLevelMaxPool(nn.Module):
+            """
+            Applies a max_pool2d on top of the last feature map
+            """
+            def forward(self, x, y):
+                names = list(y.keys())
+                m = nn.MaxPool2d(kernel_size=1, stride=2, padding=0)
+                y[names[-1] + '_maxpool'] = m(y[names[-1]])
+                return y
 from collections import OrderedDict
 import logging
 import math
+import os
 
 # 配置日誌
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -533,7 +549,7 @@ class TeacherModel(nn.Module):
             out_channels = teacher_cfg["fpn"]["out_channels"]
             
             if teacher_cfg["fpn"]["extra_blocks"] == "lastlevel_maxpool":
-                extra_blocks = misc_nn_ops.LastLevelMaxPool()
+                extra_blocks = LastLevelMaxPool()
             else:
                 extra_blocks = None
             
