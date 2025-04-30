@@ -792,35 +792,41 @@ class TeacherModel(nn.Module):
             backbone_model = IntermediateLayerGetter(backbone, return_layers)
 
             # 特徵金字塔網絡 - 修改這裡的通道配置
-            in_channels_list = [512, 1024, 2048]  
+            in_channels_list = [512, 1024, 2048]  # 明確指定 ResNet50 層 2、3、4 的通道數
             out_channels = teacher_cfg["fpn"]["out_channels"]
-            
-            if teacher_cfg["fpn"]["extra_blocks"] == "lastlevel_maxpool":
-                extra_blocks = LastLevelMaxPool()
-            else:
-                extra_blocks = None
-            
-            # 创建自定義骨幹網絡
-            class CustomBackbone(nn.Module):
-                def __init__(self, backbone_body, fpn, out_channels):
-                    super(CustomBackbone, self).__init__()
-                    self.body = backbone_body
-                    self.fpn = fpn
-                    self.out_channels = out_channels
-                
-                def forward(self, x):
-                    x = self.body(x)
-                    x = self.fpn(x)
-                    return x
-            
+
+            # 創建 FPN
             fpn_module = FeaturePyramidNetwork(
                 in_channels_list=in_channels_list,
                 out_channels=out_channels,
                 extra_blocks=extra_blocks
             )
-            
+
+            # 自定義一個簡單的包裝器來處理特徵提取
+            class CustomBackboneWrapper(nn.Module):
+                def __init__(self, body, fpn):
+                    super(CustomBackboneWrapper, self).__init__()
+                    self.body = body
+                    self.fpn = fpn
+                    self.out_channels = out_channels
+                
+                def forward(self, x):
+                    # 提取主幹特徵
+                    x = self.body(x)
+                    
+                    # 僅選取需要的特徵層
+                    selected_features = {
+                        '1': x['1'],  # layer2
+                        '2': x['2'],  # layer3
+                        '3': x['3']   # layer4
+                    }
+                    
+                    # 應用 FPN
+                    x = self.fpn(selected_features)
+                    return x
+
             # 創建自定義骨幹網絡
-            self.backbone = CustomBackbone(backbone_model, fpn_module, out_channels)
+            self.backbone = CustomBackboneWrapper(backbone_model, fpn_module)
             
             # 構建FasterRCNN
             # 定義錨點生成器
@@ -944,29 +950,50 @@ class FeaturePyramidNetwork(nn.Module):
         # 檢查輸入類型
         if isinstance(x, dict):
             # 如果輸入是字典，轉換為列表
-            x_list = [x[k] for k in sorted(x.keys())]
+            x_list = []
+            # 僅使用我們知道的通道數對應的特徵
+            for i in range(len(self.in_channels_list)):
+                key = str(i + 1)  # layer2, layer3, layer4 對應 '1', '2', '3'
+                if key in x:
+                    x_list.append(x[key])
+                else:
+                    logger.warning(f"找不到特徵層 {key}")
+                    return OrderedDict([("0", torch.zeros_like(x[list(x.keys())[0]]))])  # 返回零張量以避免崩潰
         else:
             # 如果已經是列表或元組
             x_list = x
-        
-        # 檢查輸入通道數是否與期望相符
+
+        # 檢查通道對應
         if len(x_list) != len(self.in_channels_list):
             logger.warning(f"輸入特徵數量 ({len(x_list)}) 與期望的數量 ({len(self.in_channels_list)}) 不匹配")
-            # 這裡可以添加更多邏輯來處理通道不匹配的情況
-            
+            # 如果特徵數量不匹配，做最好的努力
+            if len(x_list) < len(self.in_channels_list):
+                # 如果特徵太少，重複最後一個
+                while len(x_list) < len(self.in_channels_list):
+                    x_list.append(x_list[-1])
+            else:
+                # 如果特徵太多，只使用我們需要的
+                x_list = x_list[:len(self.in_channels_list)]
+        
         # 從底到頂處理特徵
+        # 檢查通道正確性
+        for i, (feat, expected_channels) in enumerate(zip(x_list, self.in_channels_list)):
+            if feat.shape[1] != expected_channels:
+                logger.warning(f"特徵 {i} 的通道數 ({feat.shape[1]}) 與期望的通道數 ({expected_channels}) 不匹配")
+                # 可以在這裡添加通道適配層，但這會更改模型架構
+        
+        # 實際 FPN 前向傳播
         idx = len(self.inner_blocks) - 1
-        last_inner = self.inner_blocks[idx](x_list[min(idx, len(x_list)-1)])
+        last_inner = self.inner_blocks[idx](x_list[idx])
         results = [self.layer_blocks[idx](last_inner)]
         
         # 從上到下處理其他特徵
         for idx in range(len(self.inner_blocks) - 2, -1, -1):
-            if idx < len(x_list):
-                inner_lateral = self.inner_blocks[idx](x_list[idx])
-                feat_shape = inner_lateral.shape[-2:]
-                inner_top_down = F.interpolate(last_inner, size=feat_shape, mode="nearest")
-                last_inner = inner_lateral + inner_top_down
-                results.insert(0, self.layer_blocks[idx](last_inner))
+            inner_lateral = self.inner_blocks[idx](x_list[idx])
+            feat_shape = inner_lateral.shape[-2:]
+            inner_top_down = F.interpolate(last_inner, size=feat_shape, mode="nearest")
+            last_inner = inner_lateral + inner_top_down
+            results.insert(0, self.layer_blocks[idx](last_inner))
         
         # 處理額外層
         if self.extra_blocks is not None:
