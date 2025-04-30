@@ -795,6 +795,12 @@ class TeacherModel(nn.Module):
             in_channels_list = [512, 1024, 2048]  # 明確指定 ResNet50 層 2、3、4 的通道數
             out_channels = teacher_cfg["fpn"]["out_channels"]
 
+            # 確定額外的塊類型
+            if teacher_cfg["fpn"]["extra_blocks"] == "lastlevel_maxpool":
+                extra_blocks = LastLevelMaxPool()
+            else:
+                extra_blocks = None
+
             # 創建 FPN
             fpn_module = FeaturePyramidNetwork(
                 in_channels_list=in_channels_list,
