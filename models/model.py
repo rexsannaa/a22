@@ -779,7 +779,7 @@ class TeacherModel(nn.Module):
                 "layer3": 1024,
                 "layer4": 2048
             }
-            
+
             # 提取特徵的層
             return_layers = {
                 "layer1": "0",
@@ -787,12 +787,12 @@ class TeacherModel(nn.Module):
                 "layer3": "2",
                 "layer4": "3"
             }
-            
+
             # 創建特徵提取器
             backbone_model = IntermediateLayerGetter(backbone, return_layers)
-            
-            # 特徵金字塔網絡
-            in_channels_list = [backbone_out_channels[k] for k in ["layer2", "layer3", "layer4"]]
+
+            # 特徵金字塔網絡 - 修改這裡的通道配置
+            in_channels_list = [512, 1024, 2048]  
             out_channels = teacher_cfg["fpn"]["out_channels"]
             
             if teacher_cfg["fpn"]["extra_blocks"] == "lastlevel_maxpool":
@@ -920,6 +920,9 @@ class FeaturePyramidNetwork(nn.Module):
         self.inner_blocks = nn.ModuleList()
         self.layer_blocks = nn.ModuleList()
         
+        # 記錄輸入通道以便進行適當的檢查
+        self.in_channels_list = in_channels_list
+        
         for in_channels in in_channels_list:
             inner_block = nn.Conv2d(in_channels, out_channels, 1)
             layer_block = nn.Conv2d(out_channels, out_channels, 3, padding=1)
@@ -946,17 +949,24 @@ class FeaturePyramidNetwork(nn.Module):
             # 如果已經是列表或元組
             x_list = x
         
+        # 檢查輸入通道數是否與期望相符
+        if len(x_list) != len(self.in_channels_list):
+            logger.warning(f"輸入特徵數量 ({len(x_list)}) 與期望的數量 ({len(self.in_channels_list)}) 不匹配")
+            # 這裡可以添加更多邏輯來處理通道不匹配的情況
+            
         # 從底到頂處理特徵
-        last_inner = self.inner_blocks[-1](x_list[-1])
-        results = [self.layer_blocks[-1](last_inner)]
+        idx = len(self.inner_blocks) - 1
+        last_inner = self.inner_blocks[idx](x_list[min(idx, len(x_list)-1)])
+        results = [self.layer_blocks[idx](last_inner)]
         
         # 從上到下處理其他特徵
-        for idx in range(len(x_list) - 2, -1, -1):
-            inner_lateral = self.inner_blocks[idx](x_list[idx])
-            feat_shape = inner_lateral.shape[-2:]
-            inner_top_down = F.interpolate(last_inner, size=feat_shape, mode="nearest")
-            last_inner = inner_lateral + inner_top_down
-            results.insert(0, self.layer_blocks[idx](last_inner))
+        for idx in range(len(self.inner_blocks) - 2, -1, -1):
+            if idx < len(x_list):
+                inner_lateral = self.inner_blocks[idx](x_list[idx])
+                feat_shape = inner_lateral.shape[-2:]
+                inner_top_down = F.interpolate(last_inner, size=feat_shape, mode="nearest")
+                last_inner = inner_lateral + inner_top_down
+                results.insert(0, self.layer_blocks[idx](last_inner))
         
         # 處理額外層
         if self.extra_blocks is not None:
