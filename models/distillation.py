@@ -349,7 +349,7 @@ class DistillationTrainer:
         
         Args:
             model: 模型
-            images: 輸入圖像列表
+            images: 輸入圖像列表或張量
             is_teacher: 是否為教師模型
         
         Returns:
@@ -357,12 +357,9 @@ class DistillationTrainer:
         """
         features = {}
         
-        # 將圖像列表轉換為批次張量
-        # 確保所有圖像大小一致，這是必要的步驟
+        # 確保輸入是張量
         if isinstance(images, list):
-            # 使用第一張圖像的形狀
-            batch_size = len(images)
-            img_shape = images[0].shape
+            # 轉換列表為批次張量
             batched_images = torch.stack(images)
         else:
             # 已經是張量，直接使用
@@ -415,40 +412,24 @@ class DistillationTrainer:
         
         # 提取教師特徵和輸出 (不計算梯度)
         with torch.no_grad():
-            teacher_features = self._extract_features(self.teacher_model, images, is_teacher=True)
-            
-            # 對於FasterRCNN模型，需要使用不同的輸入格式
-            # 檢查模型是否是FasterRCNN類型
-            if hasattr(self.teacher_model, 'detector') and hasattr(self.teacher_model.detector, 'transform'):
-                # 處理FasterRCNN輸入
-                from torchvision.models.detection.transform import GeneralizedRCNNTransform
-                
-                # 將圖像列表轉換為批次
-                if isinstance(images, list):
-                    # 獲取原始形狀
-                    original_image_sizes = [img.shape[-2:] for img in images]
-                    
-                    # 轉換為批次張量
-                    batched_images = torch.stack(images)
-                    
-                    # 創建類似FasterRCNN預期的數據結構
-                    image_sizes = [img.shape[-2:] for img in images]
-                    teacher_images = {'tensors': batched_images, 'image_sizes': image_sizes}
-                    
-                    # 獲取教師輸出
-                    teacher_outputs = self.teacher_model(teacher_images)
-                else:
-                    # 如果已經是字典或類似結構，直接使用
-                    teacher_outputs = self.teacher_model(images)
+            # 確保我們有單個批次張量用於特徵提取
+            if isinstance(images, list):
+                batched_images = torch.stack(images)
             else:
-                # 對於非FasterRCNN模型
-                teacher_outputs = self.teacher_model(images)
+                batched_images = images
+                
+            # 提取教師特徵
+            teacher_features = self._extract_features(self.teacher_model, batched_images, is_teacher=True)
+            
+            # 對於FasterRCNN模型，使用原始的圖像列表進行前向傳播
+            # FasterRCNN 在內部處理圖像列表
+            teacher_outputs = self.teacher_model(images)
         
         # 使用混合精度訓練
         if self.use_amp:
             with torch.cuda.amp.autocast():
                 # 提取學生特徵
-                student_features = self._extract_features(self.student_model, images, is_teacher=False)
+                student_features = self._extract_features(self.student_model, batched_images, is_teacher=False)
                 
                 # 學生模型前向傳播
                 loss_dict = self.student_model(images, targets)
@@ -471,7 +452,7 @@ class DistillationTrainer:
             self.scaler.update()
         else:
             # 提取學生特徵
-            student_features = self._extract_features(self.student_model, images, is_teacher=False)
+            student_features = self._extract_features(self.student_model, batched_images, is_teacher=False)
             
             # 學生模型前向傳播
             loss_dict = self.student_model(images, targets)
