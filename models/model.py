@@ -479,26 +479,273 @@ class StudentModel(nn.Module):
         return self.detector(x, targets)
 
 
+#!/usr/bin/env python
+# -*- coding:utf-8 -*-
+
+# 在 models/model.py 中尋找 StudentModel 類別
+# 用以下代碼替換 StudentModel 類和 BackboneWithFPN 類
+
 class BackboneWithFPN(nn.Module):
-    """用於包裝學生模型作為FasterRCNN的骨幹網絡"""
+    """用於包裝學生模型特徵提取器作為FasterRCNN的骨幹網絡"""
     
-    def __init__(self, student_model):
+    def __init__(self, backbone_body, fpn, out_channels):
         """
         初始化骨幹網絡包裝器
         
         Args:
-            student_model: 學生模型實例
+            backbone_body: 骨幹網絡主體
+            fpn: 特徵金字塔網絡
+            out_channels: 輸出通道數
         """
         super(BackboneWithFPN, self).__init__()
-        self.student_model = student_model
-        self.out_channels = self.student_model.config["student"]["dual_branch"]["global_branch"]["fpn_channels"] \
-            if self.student_model.config["student"]["dual_branch"]["enabled"] \
-            else self.student_model.config["student"]["neck"]["out_channels"]
+        self.body = backbone_body
+        self.fpn = fpn
+        self.out_channels = out_channels
     
     def forward(self, x):
         """前向傳播"""
-        features = self.student_model.extract_features(x)
-        return {str(i): feat for i, feat in enumerate(features)}
+        features = []
+        # 提取骨幹網絡特徵
+        for name, module in self.body.features._modules.items():
+            x = module(x)
+            if int(name) in [3, 6, 9, 12, 15]:  # 保存中間特徵
+                features.append(x)
+        
+        # 提取FPN特徵
+        fpn_features = self.fpn(features[-3:])  # 使用最後三層特徵
+        
+        # 返回有序字典
+        return OrderedDict([(str(i), feat) for i, feat in enumerate(fpn_features)])
+
+
+class StudentModel(nn.Module):
+    """
+    PCB缺陷檢測學生模型，整合雙分支輕量化結構和缺陷特定注意力機制
+    """
+    
+    def __init__(self, config):
+        """
+        初始化學生模型
+        
+        Args:
+            config: 配置字典
+        """
+        super(StudentModel, self).__init__()
+        self.config = config
+        student_cfg = config["student"]
+        
+        # 加載預訓練骨幹網絡
+        if student_cfg["backbone"] == "mobilenetv3_small":
+            backbone = mobilenet_v3_small(pretrained=student_cfg["pretrained"])
+            
+            # 獲取特徵層輸出通道數
+            backbone_out_channels = [
+                16,  # features.3 - stage1
+                24,  # features.6 - stage2
+                40,  # features.9 - stage3
+                80,  # features.12 - stage4
+                576  # features.15 - stage5
+            ]
+            
+            # 實現雙分支結構
+            if student_cfg["dual_branch"]["enabled"]:
+                # 全局分支
+                if student_cfg["dual_branch"]["shared_backbone"]:
+                    self.global_backbone = backbone
+                else:
+                    self.global_backbone = mobilenet_v3_small(pretrained=student_cfg["pretrained"])
+                
+                # 添加全局分支注意力
+                global_attention_type = student_cfg["dual_branch"]["global_branch"]["attention_type"]
+                if global_attention_type == "se":
+                    self.global_attention = SELayer(backbone_out_channels[-1])
+                else:
+                    self.global_attention = None
+                
+                # 添加局部分支注意力
+                local_attention_type = student_cfg["dual_branch"]["local_branch"]["attention_type"]
+                if local_attention_type == "defect_specific":
+                    self.local_attentions = nn.ModuleDict({
+                        defect_type: DefectSpecificAttention(
+                            backbone_out_channels[-1], 
+                            config["attention"]["common"]["reduction_ratio"],
+                            defect_type, 
+                            config
+                        ) for defect_type in config["dataset"]["defect_classes"]
+                    })
+                else:
+                    self.local_attentions = None
+                
+                # FPN通道設置
+                global_fpn_channels = student_cfg["dual_branch"]["global_branch"]["fpn_channels"]
+                local_fpn_channels = student_cfg["dual_branch"]["local_branch"]["fpn_channels"]
+            else:
+                # 單分支結構
+                self.global_backbone = backbone
+                self.global_attention = None
+                self.local_attentions = None
+                global_fpn_channels = student_cfg["neck"]["out_channels"]
+                local_fpn_channels = None
+            
+            # 創建特徵金字塔網絡
+            in_channels_list = backbone_out_channels[-3:]  # 使用最後三層特徵
+            
+            # 全局FPN
+            if student_cfg["neck"]["extra_blocks"] == "lastlevel_p6p7":
+                self.global_fpn_extra_blocks = LastLevelP6P7(
+                    backbone_out_channels[-1], 
+                    global_fpn_channels
+                )
+            else:
+                self.global_fpn_extra_blocks = None
+                
+            self.global_fpn = LightweightFPN(
+                in_channels_list=in_channels_list,
+                out_channels=global_fpn_channels,
+                use_depthwise=student_cfg["neck"]["use_depthwise"],
+                extra_blocks=self.global_fpn_extra_blocks
+            )
+            
+            # 局部FPN (如果啟用了雙分支)
+            if student_cfg["dual_branch"]["enabled"]:
+                if student_cfg["neck"]["extra_blocks"] == "lastlevel_p6p7":
+                    self.local_fpn_extra_blocks = LastLevelP6P7(
+                        backbone_out_channels[-1], 
+                        local_fpn_channels
+                    )
+                else:
+                    self.local_fpn_extra_blocks = None
+                    
+                self.local_fpn = LightweightFPN(
+                    in_channels_list=in_channels_list,
+                    out_channels=local_fpn_channels,
+                    use_depthwise=student_cfg["neck"]["use_depthwise"],
+                    extra_blocks=self.local_fpn_extra_blocks
+                )
+            else:
+                self.local_fpn = None
+            
+            # 合併全局和局部特徵的層
+            if student_cfg["dual_branch"]["enabled"]:
+                self.fusion_layer = nn.Conv2d(
+                    global_fpn_channels + local_fpn_channels,
+                    global_fpn_channels,
+                    kernel_size=1,
+                    bias=False
+                )
+                self.fusion_norm = nn.BatchNorm2d(global_fpn_channels)
+                self.fusion_act = nn.ReLU(inplace=True)
+            else:
+                self.fusion_layer = None
+            
+            # 構建骨幹網絡和FPN
+            self.backbone_with_fpn = BackboneWithFPN(
+                backbone_body=self.global_backbone,
+                fpn=self.global_fpn,
+                out_channels=global_fpn_channels
+            )
+            
+            # 構建檢測頭
+            # 定義錨點生成器
+            anchor_sizes = student_cfg["detection_head"]["anchor_sizes"]
+            aspect_ratios = student_cfg["detection_head"]["aspect_ratios"]
+            anchor_generator = AnchorGenerator(
+                sizes=tuple([tuple(anchor_sizes)] * (3 + (2 if self.global_fpn_extra_blocks else 0))),
+                aspect_ratios=tuple([tuple(aspect_ratios)] * (3 + (2 if self.global_fpn_extra_blocks else 0)))
+            )
+            
+            # 定義ROI池化
+            roi_pooler = MultiScaleRoIAlign(
+                featmap_names=["0", "1", "2", "3", "4"][:3 + (2 if self.global_fpn_extra_blocks else 0)],
+                output_size=7,
+                sampling_ratio=2
+            )
+            
+            # 創建FasterRCNN模型
+            self.detector = FasterRCNN(
+                backbone=self.backbone_with_fpn,
+                num_classes=student_cfg["detection_head"]["num_classes"],
+                rpn_anchor_generator=anchor_generator,
+                box_roi_pool=roi_pooler,
+                min_size=config["dataset"]["input_size"][0],
+                max_size=config["dataset"]["input_size"][1]
+            )
+            
+            # 替換分類和迴歸頭
+            in_features = self.detector.roi_heads.box_predictor.cls_score.in_features
+            self.detector.roi_heads.box_predictor = FastRCNNPredictor(
+                in_features,
+                student_cfg["detection_head"]["num_classes"]
+            )
+            
+            logger.info("學生模型初始化完成")
+    
+    def extract_features(self, x, defect_type=None):
+        """
+        提取特徵，支持缺陷特定處理
+        
+        Args:
+            x: 輸入圖像
+            defect_type: 缺陷類型，用於選擇注意力機制
+        
+        Returns:
+            特徵列表
+        """
+        student_cfg = self.config["student"]
+        
+        # 提取骨幹網絡特徵
+        features = []
+        tmp_x = x
+        for name, module in self.global_backbone.features._modules.items():
+            tmp_x = module(tmp_x)
+            if int(name) in [3, 6, 9, 12, 15]:  # 保存中間特徵
+                features.append(tmp_x)
+        
+        # 獲取全局分支特徵
+        global_features = features.copy()
+        if self.global_attention is not None:
+            global_features[-1] = self.global_attention(global_features[-1])
+        
+        # 獲取局部分支特徵(如果啟用)
+        if student_cfg["dual_branch"]["enabled"] and defect_type and self.local_attentions:
+            if defect_type in self.local_attentions:
+                local_features = features.copy()
+                local_features[-1] = self.local_attentions[defect_type](local_features[-1])
+            else:
+                local_features = features.copy()
+        else:
+            local_features = None
+        
+        # 應用FPN
+        global_fpn_features = self.global_fpn(global_features[-3:])  # 使用最後三層特徵
+        
+        if local_features is not None and self.local_fpn is not None:
+            local_fpn_features = self.local_fpn(local_features[-3:])
+            
+            # 融合全局和局部特徵
+            fused_features = []
+            for gf, lf in zip(global_fpn_features, local_fpn_features):
+                # 確保特徵大小一致
+                if gf.shape[2:] != lf.shape[2:]:
+                    lf = F.interpolate(lf, size=gf.shape[2:], mode='bilinear', align_corners=False)
+                
+                # 拼接並融合
+                fused = torch.cat([gf, lf], dim=1)
+                fused = self.fusion_layer(fused)
+                fused = self.fusion_norm(fused)
+                fused = self.fusion_act(fused)
+                fused_features.append(fused)
+            
+            return fused_features
+        else:
+            return global_fpn_features
+    
+    def forward(self, x, targets=None):
+        """前向傳播"""
+        if self.training and targets is None:
+            raise ValueError("在訓練模式中，targets不應為None")
+            
+        return self.detector(x, targets)
 
 
 class TeacherModel(nn.Module):
