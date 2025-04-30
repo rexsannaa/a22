@@ -86,8 +86,10 @@ class DistillationLoss(nn.Module):
                 student_channels, teacher_channels, adaptation_type
             )
             
-            # 將適應層添加到模組字典
-            layer_key = f"{student_layer}_to_{teacher_layer}"
+            # 將適應層添加到模組字典，將點號替換為底線以避免錯誤
+            student_layer_key = student_layer.replace(".", "_")
+            teacher_layer_key = teacher_layer.replace(".", "_")
+            layer_key = f"{student_layer_key}_to_{teacher_layer_key}"
             self.adaptation_layers[layer_key] = adaptation_layer
         
         logger.info("特徵適應層初始化完成")
@@ -182,7 +184,10 @@ class DistillationLoss(nn.Module):
                     student_feat = student_features[student_name]
                     
                     # 獲取適應層
-                    layer_key = f"{student_name}_to_{teacher_name}"
+                    student_name_key = student_name.replace(".", "_")
+                    teacher_name_key = teacher_name.replace(".", "_")
+                    layer_key = f"{student_name_key}_to_{teacher_name_key}"
+                    
                     if layer_key in self.adaptation_layers:
                         adaptation_layer = self.adaptation_layers[layer_key]
                         
