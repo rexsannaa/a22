@@ -542,11 +542,10 @@ class TeacherModel(nn.Module):
             }
             
             # 創建特徵提取器
-            self.backbone = BackboneWithBatchNorm(backbone, return_layers)
-            self.backbone.out_channels = teacher_cfg["fpn"]["out_channels"]
+            backbone_model = IntermediateLayerGetter(backbone, return_layers)
             
             # 特徵金字塔網絡
-            in_channels_list = [backbone_out_channels[k] for k in ["layer1", "layer2", "layer3", "layer4"]]
+            in_channels_list = [backbone_out_channels[k] for k in ["layer2", "layer3", "layer4"]]
             out_channels = teacher_cfg["fpn"]["out_channels"]
             
             if teacher_cfg["fpn"]["extra_blocks"] == "lastlevel_maxpool":
@@ -554,21 +553,28 @@ class TeacherModel(nn.Module):
             else:
                 extra_blocks = None
             
-            self.fpn = nn.Sequential(
-                OrderedDict(
-                    [
-                        (
-                            "fpn",
-                            FeaturePyramidNetwork(
-                                in_channels_list=in_channels_list[-3:],  # 使用最後三層特徵
-                                out_channels=out_channels,
-                                extra_blocks=extra_blocks,
-                            )
-                        )
-                    ]
-                )
+            # 创建自定義骨幹網絡
+            class CustomBackbone(nn.Module):
+                def __init__(self, backbone_body, fpn, out_channels):
+                    super(CustomBackbone, self).__init__()
+                    self.body = backbone_body
+                    self.fpn = fpn
+                    self.out_channels = out_channels
+                
+                def forward(self, x):
+                    x = self.body(x)
+                    x = self.fpn(x)
+                    return x
+            
+            fpn_module = FeaturePyramidNetwork(
+                in_channels_list=in_channels_list,
+                out_channels=out_channels,
+                extra_blocks=extra_blocks
             )
-            self.out_channels = teacher_cfg["fpn"]["out_channels"]
+            
+            # 創建自定義骨幹網絡
+            self.backbone = CustomBackbone(backbone_model, fpn_module, out_channels)
+            
             # 構建FasterRCNN
             # 定義錨點生成器
             anchor_sizes = teacher_cfg["rpn"]["anchor_sizes"]
@@ -587,7 +593,7 @@ class TeacherModel(nn.Module):
             
             # 創建FasterRCNN模型
             self.detector = FasterRCNN(
-                backbone=self,
+                backbone=self.backbone,
                 num_classes=teacher_cfg["roi_heads"]["num_classes"],
                 rpn_anchor_generator=anchor_generator,
                 box_roi_pool=roi_pooler,
