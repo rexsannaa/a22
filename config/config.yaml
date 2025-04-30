@@ -1,9 +1,5 @@
-#!/usr/bin/env python
-# -*- coding:utf-8 -*-
-"""
-config.yaml - PCB缺陷檢測知識蒸餾增強型混合模型配置檔案
-整合全局配置、資料處理、模型架構與部署優化參數。
-"""
+# PCB缺陷檢測知識蒸餾增強型混合模型配置檔案
+# 整合全局配置、資料處理、模型架構與部署優化參數。
 
 # ====================
 # 基本路徑配置
@@ -163,11 +159,16 @@ distillation:
   
   # 特徵蒸餾設定
   feature_distillation:
-    layers: [
-      {"teacher": "layer1", "student": "features.3", "weight": 0.1},
-      {"teacher": "layer2", "student": "features.6", "weight": 0.2},
-      {"teacher": "layer3", "student": "features.9", "weight": 0.3}
-    ]
+    layers:
+      - teacher: "layer1"
+        student: "features.3" 
+        weight: 0.1
+      - teacher: "layer2"
+        student: "features.6"
+        weight: 0.2
+      - teacher: "layer3"
+        student: "features.9"
+        weight: 0.3
     adaptation:
       type: "conv1x1"  # 特徵調整方法
       init_type: "kaiming"
