@@ -333,26 +333,38 @@ class PCBTrainer:
         # 使用tqdm顯示進度
         with tqdm(train_loader, desc=f"輪次 {epoch+1}/{self.config['training']['epochs']}") as t:
             for batch_idx, (images, targets, _) in enumerate(t):
-                # 將數據移到設備上
-                images = [img.to(self.device) for img in images]
-                targets = [{k: v.to(self.device) for k, v in t.items()} for t in targets]
-                
-                # 訓練步驟
-                loss_dict = self.trainer.train_step(images, targets, epoch)
-                
-                # 累積損失
-                batch_loss = loss_dict["total_loss"]
-                train_loss += batch_loss
-                batch_count += 1
-                
-                # 更新進度條
-                t.set_postfix(loss=batch_loss)
-                
-                # 記錄間隔
-                if batch_idx % log_interval == 0:
-                    lr = self.optimizer.param_groups[0]["lr"]
-                    logger.info(f"輪次 {epoch+1} [{batch_idx}/{len(train_loader)}] "
-                              f"Loss: {batch_loss:.4f} LR: {lr:.6f}")
+                try:
+                    # 檢查每個目標是否有邊界框
+                    for i, target in enumerate(targets):
+                        if target['boxes'].numel() == 0:
+                            # 創建一個簡單的虛擬框
+                            height, width = images[i].shape[1:3]
+                            targets[i]['boxes'] = torch.tensor([[10.0, 10.0, 30.0, 30.0]], device=self.device)
+                            targets[i]['labels'] = torch.tensor([0], device=self.device)  # 背景類別
+                    
+                    # 將數據移到設備上
+                    images = [img.to(self.device) for img in images]
+                    targets = [{k: v.to(self.device) for k, v in t.items()} for t in targets]
+                    
+                    # 訓練步驟
+                    loss_dict = self.trainer.train_step(images, targets, epoch)
+                    
+                    # 累積損失
+                    batch_loss = loss_dict["total_loss"]
+                    train_loss += batch_loss
+                    batch_count += 1
+                    
+                    # 更新進度條
+                    t.set_postfix(loss=batch_loss)
+                    
+                    # 記錄間隔
+                    if batch_idx % log_interval == 0:
+                        lr = self.optimizer.param_groups[0]["lr"]
+                        logger.info(f"輪次 {epoch+1} [{batch_idx}/{len(train_loader)}] "
+                                f"Loss: {batch_loss:.4f} LR: {lr:.6f}")
+                except Exception as e:
+                    logger.error(f"批次 {batch_idx} 處理失敗: {str(e)}")
+                    continue
         
         # 計算平均損失
         avg_loss = train_loss / max(batch_count, 1)
@@ -362,8 +374,8 @@ class PCBTrainer:
         
         # 輸出輪次統計
         logger.info(f"輪次 {epoch+1} 訓練完成 - "
-                   f"平均損失: {avg_loss:.4f}, "
-                   f"時間: {epoch_time:.1f}s")
+                f"平均損失: {avg_loss:.4f}, "
+                f"時間: {epoch_time:.1f}s")
         
         # 返回訓練指標
         return {
@@ -371,7 +383,7 @@ class PCBTrainer:
             "lr": self.optimizer.param_groups[0]["lr"],
             "epoch_time": epoch_time
         }
-    
+        
     def _validate(self, epoch):
         """驗證模型性能"""
         # 獲取設定

@@ -35,11 +35,42 @@ except AttributeError:
             """
             Applies a max_pool2d on top of the last feature map
             """
-            def forward(self, x, y):
-                names = list(y.keys())
-                m = nn.MaxPool2d(kernel_size=1, stride=2, padding=0)
-                y[names[-1] + '_maxpool'] = m(y[names[-1]])
-                return y
+            def __init__(self):
+                super(LastLevelMaxPool, self).__init__()
+
+            def forward(self, x, y=None):
+                if isinstance(x, torch.Tensor):
+                    return [F.max_pool2d(x, kernel_size=1, stride=2, padding=0)]
+                elif isinstance(x, list) and len(x) > 0:
+                    return [F.max_pool2d(x[-1], kernel_size=1, stride=2, padding=0)]
+                else:
+                    # 處理字典情況或其他情況
+                    if y is None:
+                        y = x  # 如果 y 未提供，假設 x 是結果
+                    
+                    if isinstance(y, OrderedDict):
+                        # 找到最後一個特徵
+                        names = list(y.keys())
+                        if not names:
+                            return []
+                        last_feature = y[names[-1]]
+                        # 應用 max_pool
+                        pooled = F.max_pool2d(last_feature, kernel_size=1, stride=2, padding=0)
+                        # 添加到結果
+                        y[names[-1] + '_maxpool'] = pooled
+                        return y
+                    elif isinstance(y, dict):
+                        # 找到最後一個特徵
+                        names = list(y.keys())
+                        if not names:
+                            return []
+                        last_feature = y[names[-1]]
+                        # 創建新結果
+                        result = OrderedDict()
+                        result[names[-1] + '_maxpool'] = F.max_pool2d(last_feature, kernel_size=1, stride=2, padding=0)
+                        return result
+                    
+                    return []
 from collections import OrderedDict
 import logging
 import math

@@ -120,6 +120,16 @@ class PCBDefectDataset(Dataset):
         # 讀取標註
         boxes, labels = self._parse_annotation(xml_path)
         
+        # 檢查是否有邊界框，如果沒有則創建一個虛擬框
+        if len(boxes) == 0:
+            # 創建一個虛擬的小框，類別設為背景 (0)
+            height, width = image.shape[:2]
+            boxes = [[10, 10, 30, 30]]  # 一個小框在左上角
+            labels = [0]  # 背景類別
+            
+            # 記錄警告日誌
+            logging.warning(f"檔案 {img_path} 沒有標註框，已創建虛擬框")
+        
         # 轉換為張量
         image_tensor = torch.from_numpy(image.transpose(2, 0, 1)).float() / 255.0
         

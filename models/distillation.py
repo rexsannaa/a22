@@ -417,6 +417,14 @@ class DistillationTrainer:
         Returns:
             損失字典
         """
+        # 檢查空目標框
+        for i, target in enumerate(targets):
+            if target['boxes'].numel() == 0:
+                # 創建一個簡單的虛擬框
+                height, width = images[i].shape[1:3]
+                targets[i]['boxes'] = torch.tensor([[10.0, 10.0, 30.0, 30.0]], device=targets[i]['boxes'].device)
+                targets[i]['labels'] = torch.tensor([0], device=targets[i]['labels'].device)  # 背景類別
+                
         # 更新蒸餾損失的訓練階段
         self.distill_loss.update_epoch(epoch)
         
