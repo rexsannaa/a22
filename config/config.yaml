@@ -5,13 +5,13 @@
 # 基本路徑配置
 # ====================
 paths:
-  dataset: "C:/Users/a/Desktop/研討會/PCB_DATASET"
-  images: "C:/Users/a/Desktop/研討會/PCB_DATASET/images"
-  annotations: "C:/Users/a/Desktop/研討會/PCB_DATASET/Annotations"
-  rotation: "C:/Users/a/Desktop/研討會/PCB_DATASET/rotation"
-  output: "C:/Users/a/Desktop/研討會/code/PCB_Defect_Detection/outputs"
-  weights: "C:/Users/a/Desktop/研討會/code/PCB_Defect_Detection/outputs/weights"
-  logs: "C:/Users/a/Desktop/研討會/code/PCB_Defect_Detection/outputs/logs"
+  dataset: "C:/Users/a/Desktop/conference/PCB_DATASET"
+  images: "C:/Users/a/Desktop/conference/PCB_DATASET/images"
+  annotations: "C:/Users/a/Desktop/conference/PCB_DATASET/Annotations"
+  rotation: "C:/Users/a/Desktop/conference/PCB_DATASET/rotation"
+  output: "C:/Users/a/Desktop/conference/code/PCB_Defect_Detection/outputs"
+  weights: "C:/Users/a/Desktop/conference/code/PCB_Defect_Detection/outputs/weights"
+  logs: "C:/Users/a/Desktop/conference/code/PCB_Defect_Detection/outputs/logs"
 
 # ====================
 # 資料集配置
