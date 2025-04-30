@@ -18,7 +18,13 @@ from torchvision.models.detection import FasterRCNN
 from torchvision.models.detection.rpn import AnchorGenerator
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.ops import MultiScaleRoIAlign
-from torchvision.ops import misc as misc_nn_ops
+try:
+    # 嘗試從舊位置導入
+    from torchvision.ops import misc as misc_nn_ops
+    IntermediateLayerGetter = misc_nn_ops.IntermediateLayerGetter
+except AttributeError:
+    # 如果失敗，從新位置導入
+    from torchvision.models._utils import IntermediateLayerGetter
 from collections import OrderedDict
 import logging
 import math
@@ -614,7 +620,12 @@ class BackboneWithBatchNorm(nn.Module):
         super(BackboneWithBatchNorm, self).__init__()
         
         # 提取層
-        self.body = misc_nn_ops.IntermediateLayerGetter(backbone, return_layers)
+        try:
+            # 嘗試使用舊版本的方式
+            self.body = misc_nn_ops.IntermediateLayerGetter(backbone, return_layers)
+        except (AttributeError, NameError):
+            # 如果失敗，使用新版本的方式
+            self.body = IntermediateLayerGetter(backbone, return_layers)
     
     def forward(self, x):
         """前向傳播"""
