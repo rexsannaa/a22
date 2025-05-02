@@ -38,38 +38,27 @@ except AttributeError:
             def __init__(self):
                 super(LastLevelMaxPool, self).__init__()
 
-            def forward(self, x, y=None):
+            def forward(self, x):
                 if isinstance(x, torch.Tensor):
                     return [F.max_pool2d(x, kernel_size=1, stride=2, padding=0)]
                 elif isinstance(x, list) and len(x) > 0:
                     return [F.max_pool2d(x[-1], kernel_size=1, stride=2, padding=0)]
+                elif isinstance(x, OrderedDict):
+                    # 處理 OrderedDict 情況
+                    names = list(x.keys())
+                    if not names:
+                        return []
+                    last_feature = x[names[-1]]
+                    # 應用 max_pool
+                    pooled = F.max_pool2d(last_feature, kernel_size=1, stride=2, padding=0)
+                    # 創建新的OrderedDict返回
+                    result = OrderedDict()
+                    for k in x.keys():
+                        result[k] = x[k]
+                    result[str(len(names))] = pooled
+                    return result
                 else:
-                    # 處理字典情況或其他情況
-                    if y is None:
-                        y = x  # 如果 y 未提供，假設 x 是結果
-                    
-                    if isinstance(y, OrderedDict):
-                        # 找到最後一個特徵
-                        names = list(y.keys())
-                        if not names:
-                            return []
-                        last_feature = y[names[-1]]
-                        # 應用 max_pool
-                        pooled = F.max_pool2d(last_feature, kernel_size=1, stride=2, padding=0)
-                        # 添加到結果
-                        y[names[-1] + '_maxpool'] = pooled
-                        return y
-                    elif isinstance(y, dict):
-                        # 找到最後一個特徵
-                        names = list(y.keys())
-                        if not names:
-                            return []
-                        last_feature = y[names[-1]]
-                        # 創建新結果
-                        result = OrderedDict()
-                        result[names[-1] + '_maxpool'] = F.max_pool2d(last_feature, kernel_size=1, stride=2, padding=0)
-                        return result
-                    
+                    # 對於其他情況，返回空列表
                     return []
 from collections import OrderedDict
 import logging
@@ -395,18 +384,22 @@ class StudentModel(nn.Module):
             else:
                 self.local_fpn = None
             
-            if student_cfg["dual_branch"]["enabled"]:
-                # 使用一個固定的輸出通道數以匹配後續部分的期望
-                final_output_channels = 80  # 根據錯誤信息修改
+            if student_cfg["dual_branch"]["enabled"]:   
+                # 輸入和輸出通道數需要匹配
+                input_channels = global_fpn_channels + local_fpn_channels
+                output_channels = global_fpn_channels  # 使用和全局分支相同的通道數
                 
                 self.fusion_layer = nn.Conv2d(
-                    global_fpn_channels + local_fpn_channels,  # 輸入通道
-                    final_output_channels,  # 輸出通道
+                    input_channels,  # 輸入通道
+                    output_channels,  # 輸出通道
                     kernel_size=1,
                     bias=False
                 )
-                self.fusion_norm = nn.BatchNorm2d(final_output_channels)
+                self.fusion_norm = nn.BatchNorm2d(output_channels)
                 self.fusion_act = nn.ReLU(inplace=True)
+                
+                # 更新 fpn_out_channels 以確保後續層匹配
+                fpn_out_channels = output_channels
             else:
                 self.fusion_layer = None
             
