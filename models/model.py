@@ -649,10 +649,6 @@ class StudentModel(nn.Module):
                 )
             else:
                 self.local_fpn = None
-            
-            # 合併全局和局部特徵的層 - 這裡是問題所在
-            # 關鍵修改：全局FPN輸出通道為96，這與模型後續部分期望的80通道不匹配
-            # 因此我們在這裡修改為正確的通道數
             if student_cfg["dual_branch"]["enabled"]:
                 # 使用一個固定的輸出通道數以匹配後續部分的期望
                 final_output_channels = 80  # 根據錯誤信息修改
