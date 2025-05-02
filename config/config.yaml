@@ -170,9 +170,9 @@ distillation:
         student: "features.9"
         weight: 0.3
     adaptation:
-      type: "conv1x1"  # 特徵調整方法
+      type: "conv1x1"
       init_type: "kaiming"
-    distance: "l2"  # 特徵距離度量
+    distance: "l2"
   
   # 策略調整 - 訓練過程中的動態調整
   schedule:

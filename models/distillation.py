@@ -372,23 +372,31 @@ class DistillationTrainer:
             with torch.no_grad():
                 # 提取骨幹網絡的特徵 - 使用原始方式
                 try:
-                    # 首先嘗試正常提取
-                    body_features = model.backbone.body(batched_images)
+                    # 直接使用 ResNet 的各層提取特徵，避免使用 IntermediateLayerGetter
+                    x = batched_images
+                    # ResNet 結構: conv1, bn1, relu, maxpool, layer1, layer2, layer3, layer4
+                    x = model.backbone.body.conv1(x)
+                    x = model.backbone.body.bn1(x)
+                    x = model.backbone.body.relu(x)
+                    x = model.backbone.body.maxpool(x)
+                    
+                    # 依次通過各層
+                    layer1 = model.backbone.body.layer1(x)
+                    layer2 = model.backbone.body.layer2(layer1)
+                    layer3 = model.backbone.body.layer3(layer2)
+                    layer4 = model.backbone.body.layer4(layer3)
+                    
                     # 映射層名稱
-                    for name, feat in body_features.items():
-                        if name == '0':
-                            features['layer1'] = feat
-                        elif name == '1':
-                            features['layer2'] = feat
-                        elif name == '2':
-                            features['layer3'] = feat
-                        elif name == '3':
-                            features['layer4'] = feat
+                    features = {
+                        'layer1': layer1,
+                        'layer2': layer2,
+                        'layer3': layer3,
+                        'layer4': layer4
+                    }
                 except Exception as e:
-                    # 如果正常提取失敗，使用更簡單的方法
-                    logger.warning(f"標準特徵提取失敗: {str(e)}，使用替代方法")
-                    # 使用替代提取方法 - 直接使用學生模型特徵作為占位符
-                    # 這會導致蒸餾不完美，但至少訓練能繼續
+                    # 如果直接提取失敗，使用替代方法
+                    logger.warning(f"直接特徵提取失敗: {str(e)}，使用零張量替代")
+                    # 使用零張量作為占位符
                     features = {
                         'layer2': torch.zeros((batched_images.shape[0], 512, batched_images.shape[2]//4, batched_images.shape[3]//4), device=batched_images.device),
                         'layer3': torch.zeros((batched_images.shape[0], 1024, batched_images.shape[2]//8, batched_images.shape[3]//8), device=batched_images.device),
