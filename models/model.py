@@ -657,27 +657,36 @@ class StudentModel(nn.Module):
                 )
             else:
                 self.local_fpn = None
+            
+            # 確定最終輸出通道數和融合層
             if student_cfg["dual_branch"]["enabled"]:
-                # 使用一個固定的輸出通道數以匹配後續部分的期望
-                final_output_channels = 80  # 根據錯誤信息修改
+                # 計算正確的輸入和輸出通道數
+                input_channels = global_fpn_channels + local_fpn_channels  # 來自兩個分支的總輸入通道
+                
+                # 確保輸出通道與網絡後續部分的期望相匹配
+                output_channels = 80  # 固定輸出通道為 80，以匹配下一層的期望
                 
                 self.fusion_layer = nn.Conv2d(
-                    global_fpn_channels + local_fpn_channels,  # 輸入通道
-                    final_output_channels,  # 輸出通道
+                    input_channels,  # 輸入：全局和局部通道的總和
+                    output_channels,  # 輸出：固定為 80 通道
                     kernel_size=1,
                     bias=False
                 )
-                self.fusion_norm = nn.BatchNorm2d(final_output_channels)
+                self.fusion_norm = nn.BatchNorm2d(output_channels)
                 self.fusion_act = nn.ReLU(inplace=True)
+                
+                # 確保 backbone_with_fpn 獲得正確的 out_channels
+                fpn_out_channels = output_channels  # 使用相同的輸出通道數
             else:
                 self.fusion_layer = None
+                fpn_out_channels = global_fpn_channels
             
             # 構建骨幹網絡和FPN
-            # 關鍵修改：確保out_channels參數正確
+            # 使用正確的輸出通道數
             self.backbone_with_fpn = BackboneWithFPN(
                 backbone_body=self.global_backbone,
                 fpn=self.global_fpn,
-                out_channels=80 if student_cfg["dual_branch"]["enabled"] else global_fpn_channels
+                out_channels=fpn_out_channels  # 使用正確確定的輸出通道數
             )
             
             # 構建檢測頭
@@ -757,15 +766,16 @@ class StudentModel(nn.Module):
         if local_features is not None and self.local_fpn is not None:
             local_fpn_features = self.local_fpn(local_features[-3:])
             
-            # 融合全局和局部特徵
+            # 融合操作
             fused_features = []
             for gf, lf in zip(global_fpn_features, local_fpn_features):
-                # 確保特徵大小一致
+                # 確保特徵具有相同的空間維度
                 if gf.shape[2:] != lf.shape[2:]:
                     lf = F.interpolate(lf, size=gf.shape[2:], mode='bilinear', align_corners=False)
                 
-                # 拼接並融合
+                # 沿通道維度連接
                 fused = torch.cat([gf, lf], dim=1)
+                # 應用融合層
                 fused = self.fusion_layer(fused)
                 fused = self.fusion_norm(fused)
                 fused = self.fusion_act(fused)
