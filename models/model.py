@@ -306,7 +306,7 @@ class StudentModel(nn.Module):
         
         # 加載預訓練骨幹網絡
         if student_cfg["backbone"] == "mobilenetv3_small":
-            self.backbone = mobilenet_v3_small(pretrained=student_cfg["pretrained"])
+            backbone = mobilenet_v3_small(pretrained=student_cfg["pretrained"])
             
             # 獲取特徵層輸出通道數
             backbone_out_channels = [
@@ -321,7 +321,7 @@ class StudentModel(nn.Module):
             if student_cfg["dual_branch"]["enabled"]:
                 # 全局分支
                 if student_cfg["dual_branch"]["shared_backbone"]:
-                    self.global_backbone = self.backbone
+                    self.global_backbone = backbone
                 else:
                     self.global_backbone = mobilenet_v3_small(pretrained=student_cfg["pretrained"])
                 
@@ -351,7 +351,7 @@ class StudentModel(nn.Module):
                 local_fpn_channels = student_cfg["dual_branch"]["local_branch"]["fpn_channels"]
             else:
                 # 單分支結構
-                self.global_backbone = self.backbone
+                self.global_backbone = backbone
                 self.global_attention = None
                 self.local_attentions = None
                 global_fpn_channels = student_cfg["neck"]["out_channels"]
@@ -395,18 +395,26 @@ class StudentModel(nn.Module):
             else:
                 self.local_fpn = None
             
-            # 合併全局和局部特徵的層
             if student_cfg["dual_branch"]["enabled"]:
+                # 使用一個固定的輸出通道數以匹配後續部分的期望
+                final_output_channels = 80  # 根據錯誤信息修改
+                
                 self.fusion_layer = nn.Conv2d(
-                    global_fpn_channels + local_fpn_channels,
-                    global_fpn_channels,
+                    global_fpn_channels + local_fpn_channels,  # 輸入通道
+                    final_output_channels,  # 輸出通道
                     kernel_size=1,
                     bias=False
                 )
-                self.fusion_norm = nn.BatchNorm2d(global_fpn_channels)
+                self.fusion_norm = nn.BatchNorm2d(final_output_channels)
                 self.fusion_act = nn.ReLU(inplace=True)
             else:
                 self.fusion_layer = None
+            
+            self.backbone_with_fpn = BackboneWithFPN(
+                backbone_body=self.global_backbone,
+                fpn=self.global_fpn,
+                out_channels=80 if student_cfg["dual_branch"]["enabled"] else global_fpn_channels
+            )
             
             # 構建檢測頭
             # 定義錨點生成器
@@ -426,7 +434,7 @@ class StudentModel(nn.Module):
             
             # 創建FasterRCNN模型
             self.detector = FasterRCNN(
-                backbone=BackboneWithFPN(self),
+                backbone=self.backbone_with_fpn,
                 num_classes=student_cfg["detection_head"]["num_classes"],
                 rpn_anchor_generator=anchor_generator,
                 box_roi_pool=roi_pooler,
