@@ -152,7 +152,7 @@ class PCBDefectDataset(Dataset):
         """解析XML標註檔"""
         tree = ET.parse(xml_path)
         root = tree.getroot()
-        
+            
         # 獲取圖像大小
         size = root.find('size')
         width = int(size.find('width').text)
