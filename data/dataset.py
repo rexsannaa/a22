@@ -51,7 +51,11 @@ class PCBDefectDataset(Dataset):
         self.annotations_dir = config["paths"]["annotations"]
         self.rotation_dir = config["paths"]["rotation"]
         self.defect_classes = config["dataset"]["defect_classes"]
-        self.class_to_idx = {cls: i + 1 for i, cls in enumerate(self.defect_classes)}
+        
+        self.class_to_idx = {}
+        for i, cls in enumerate(self.defect_classes):
+            self.class_to_idx[cls] = i + 1  # 大寫版本 (如 "Missing_hole")
+            self.class_to_idx[cls.lower()] = i + 1  # 小寫版本 (如 "missing_hole")
         self.class_to_idx['background'] = 0
         
         # 加載與切分資料
@@ -150,48 +154,70 @@ class PCBDefectDataset(Dataset):
     
     def _parse_annotation(self, xml_path):
         """解析XML標註檔"""
-        tree = ET.parse(xml_path)
-        root = tree.getroot()
-            
-        # 獲取圖像大小
-        size = root.find('size')
-        width = int(size.find('width').text)
-        height = int(size.find('height').text)
-        
-        boxes = []
-        labels = []
-        
-        # 解析每個物體
-        for obj in root.findall('object'):
-            # 獲取類別，處理大小寫不一致問題
-            name = obj.find('name').text
-            # 將標註名稱轉換為首字母大寫且包含下劃線格式（與目錄名稱一致）
-            name_parts = name.split('_')
-            name = '_'.join(part.capitalize() for part in name_parts)
-            
-            if name not in self.class_to_idx:
-                continue
+        try:
+            tree = ET.parse(xml_path)
+            root = tree.getroot()
                 
-            label = self.class_to_idx[name]
+            # 獲取圖像大小
+            size = root.find('size')
+            width = int(size.find('width').text)
+            height = int(size.find('height').text)
             
-            # 獲取邊界框
-            bndbox = obj.find('bndbox')
-            xmin = int(bndbox.find('xmin').text)
-            ymin = int(bndbox.find('ymin').text)
-            xmax = int(bndbox.find('xmax').text)
-            ymax = int(bndbox.find('ymax').text)
+            boxes = []
+            labels = []
             
-            # 確保邊界框在圖像內
-            xmin = max(0, min(xmin, width - 1))
-            ymin = max(0, min(ymin, height - 1))
-            xmax = max(0, min(xmax, width - 1))
-            ymax = max(0, min(ymax, height - 1))
+            # 解析每個物體
+            for obj in root.findall('object'):
+                # 獲取類別，處理大小寫不一致問題
+                name = obj.find('name').text
+                
+                # 直接使用小寫版本匹配 (XML中是missing_hole格式)
+                if name.lower() in self.class_to_idx:
+                    label = self.class_to_idx[name.lower()]
+                else:
+                    # 嘗試首字母大寫版本
+                    name_parts = name.split('_')
+                    capitalized_name = '_'.join(part.capitalize() for part in name_parts)
+                    
+                    if capitalized_name in self.class_to_idx:
+                        label = self.class_to_idx[capitalized_name]
+                    else:
+                        # 如果都不匹配，跳過此物體
+                        continue
+                
+                # 獲取邊界框
+                bndbox = obj.find('bndbox')
+                if bndbox is None:
+                    continue
+                    
+                # 嘗試讀取並轉換座標值，處理可能的錯誤
+                try:
+                    xmin = int(float(bndbox.find('xmin').text))
+                    ymin = int(float(bndbox.find('ymin').text))
+                    xmax = int(float(bndbox.find('xmax').text))
+                    ymax = int(float(bndbox.find('ymax').text))
+                    
+                    # 檢查座標有效性
+                    if xmin >= xmax or ymin >= ymax:
+                        continue
+                    
+                    # 確保邊界框在圖像內
+                    xmin = max(0, min(xmin, width - 1))
+                    ymin = max(0, min(ymin, height - 1))
+                    xmax = max(0, min(xmax, width - 1))
+                    ymax = max(0, min(ymax, height - 1))
+                    
+                    # 添加到列表
+                    boxes.append([xmin, ymin, xmax, ymax])
+                    labels.append(label)
+                except Exception as e:
+                    # 座標解析錯誤，跳過此物體
+                    continue
             
-            # 添加到列表
-            boxes.append([xmin, ymin, xmax, ymax])
-            labels.append(label)
-        
-        return boxes, labels
+            return boxes, labels
+        except Exception as e:
+            # XML檔案解析錯誤，返回空列表
+            return [], []
 
 class PCBTransform:
     """PCB資料轉換類，實現資料增強和預處理"""
