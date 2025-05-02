@@ -163,8 +163,12 @@ class PCBDefectDataset(Dataset):
         
         # 解析每個物體
         for obj in root.findall('object'):
-            # 獲取類別
+            # 獲取類別，處理大小寫不一致問題
             name = obj.find('name').text
+            # 將標註名稱轉換為首字母大寫且包含下劃線格式（與目錄名稱一致）
+            name_parts = name.split('_')
+            name = '_'.join(part.capitalize() for part in name_parts)
+            
             if name not in self.class_to_idx:
                 continue
                 
@@ -188,7 +192,6 @@ class PCBDefectDataset(Dataset):
             labels.append(label)
         
         return boxes, labels
-
 
 class PCBTransform:
     """PCB資料轉換類，實現資料增強和預處理"""

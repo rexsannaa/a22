@@ -509,13 +509,6 @@ class StudentModel(nn.Module):
             
         return self.detector(x, targets)
 
-
-#!/usr/bin/env python
-# -*- coding:utf-8 -*-
-
-# 在 models/model.py 中尋找 StudentModel 類別
-# 用以下代碼替換 StudentModel 類和 BackboneWithFPN 類
-
 class BackboneWithFPN(nn.Module):
     """用於包裝學生模型特徵提取器作為FasterRCNN的骨幹網絡"""
     
@@ -531,6 +524,7 @@ class BackboneWithFPN(nn.Module):
         super(BackboneWithFPN, self).__init__()
         self.body = backbone_body
         self.fpn = fpn
+        # 確保這裡的out_channels與模型內部使用的通道數匹配
         self.out_channels = out_channels
     
     def forward(self, x):
@@ -656,24 +650,30 @@ class StudentModel(nn.Module):
             else:
                 self.local_fpn = None
             
-            # 合併全局和局部特徵的層
+            # 合併全局和局部特徵的層 - 這裡是問題所在
+            # 關鍵修改：全局FPN輸出通道為96，這與模型後續部分期望的80通道不匹配
+            # 因此我們在這裡修改為正確的通道數
             if student_cfg["dual_branch"]["enabled"]:
+                # 使用一個固定的輸出通道數以匹配後續部分的期望
+                final_output_channels = 80  # 根據錯誤信息修改
+                
                 self.fusion_layer = nn.Conv2d(
-                    global_fpn_channels + local_fpn_channels,
-                    global_fpn_channels,
+                    global_fpn_channels + local_fpn_channels,  # 輸入通道
+                    final_output_channels,  # 輸出通道
                     kernel_size=1,
                     bias=False
                 )
-                self.fusion_norm = nn.BatchNorm2d(global_fpn_channels)
+                self.fusion_norm = nn.BatchNorm2d(final_output_channels)
                 self.fusion_act = nn.ReLU(inplace=True)
             else:
                 self.fusion_layer = None
             
             # 構建骨幹網絡和FPN
+            # 關鍵修改：確保out_channels參數正確
             self.backbone_with_fpn = BackboneWithFPN(
                 backbone_body=self.global_backbone,
                 fpn=self.global_fpn,
-                out_channels=global_fpn_channels
+                out_channels=80 if student_cfg["dual_branch"]["enabled"] else global_fpn_channels
             )
             
             # 構建檢測頭
@@ -981,6 +981,7 @@ class FeaturePyramidNetwork(nn.Module):
         
         # 設置額外塊
         self.extra_blocks = extra_blocks
+        self.out_channels = out_channels  # 添加輸出通道屬性
     
     def forward(self, x):
         """前向傳播"""

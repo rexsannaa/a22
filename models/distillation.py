@@ -125,7 +125,9 @@ class DistillationLoss(nn.Module):
         return 64
     
     def _create_adaptation_layer(self, in_channels, out_channels, adaptation_type):
-        """創建特徵適應層"""
+        """創建特徵適應層，確保in_channels和out_channels匹配"""
+        print(f"創建適應層: in_channels={in_channels}, out_channels={out_channels}")
+        
         if adaptation_type == "conv1x1":
             layer = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
         elif adaptation_type == "conv3x3":
