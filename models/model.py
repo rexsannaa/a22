@@ -575,30 +575,36 @@ class StudentModel(nn.Module):
         # 應用FPN
         global_fpn_features = self.global_fpn(global_features[-3:])  # 使用最後三層特徵
         
-        # 關鍵修改: 確保特徵通道數匹配，需要添加顯式的通道轉換步驟
-        # 如果全局特徵的通道數是96，而我們期望的是80，添加一個1x1卷積來調整通道數
+        # 調整全局特徵通道
         adjusted_global_features = []
         for feature in global_fpn_features:
-            if feature.shape[1] != 80:  # 如果不是期望的80通道
-                # 使用1x1卷積調整通道數
-                channel_adapter = nn.Conv2d(feature.shape[1], 80, kernel_size=1, bias=False).to(feature.device)
-                feature = channel_adapter(feature)
-            adjusted_global_features.append(feature)
+            # 檢查通道數量並調整為96
+            if feature.shape[1] != 96:
+                channel_adapter = nn.Conv2d(feature.shape[1], 96, kernel_size=1, bias=False).to(feature.device)
+                # 隨機初始化權重
+                nn.init.kaiming_normal_(channel_adapter.weight, mode='fan_out', nonlinearity='relu')
+                adjusted_feature = channel_adapter(feature)
+                adjusted_global_features.append(adjusted_feature)
+            else:
+                adjusted_global_features.append(feature)
         
-        global_fpn_features = adjusted_global_features  # 更新全局特徵
+        global_fpn_features = adjusted_global_features
         
         if local_features is not None and self.local_fpn is not None:
             local_fpn_features = self.local_fpn(local_features[-3:])
             
-            # 同樣為局部特徵添加通道調整
+            # 同樣為局部特徵添加通道調整到96
             adjusted_local_features = []
             for feature in local_fpn_features:
-                if feature.shape[1] != 80:  # 如果不是期望的80通道
-                    channel_adapter = nn.Conv2d(feature.shape[1], 80, kernel_size=1, bias=False).to(feature.device)
-                    feature = channel_adapter(feature)
-                adjusted_local_features.append(feature)
+                if feature.shape[1] != 96:
+                    channel_adapter = nn.Conv2d(feature.shape[1], 96, kernel_size=1, bias=False).to(feature.device)
+                    nn.init.kaiming_normal_(channel_adapter.weight, mode='fan_out', nonlinearity='relu')
+                    adjusted_feature = channel_adapter(feature)
+                    adjusted_local_features.append(adjusted_feature)
+                else:
+                    adjusted_local_features.append(feature)
             
-            local_fpn_features = adjusted_local_features  # 更新局部特徵
+            local_fpn_features = adjusted_local_features
                 
             # 融合操作
             fused_features = []
@@ -609,7 +615,7 @@ class StudentModel(nn.Module):
                 
                 # 沿通道維度連接
                 fused = torch.cat([gf, lf], dim=1)
-                # 應用融合層
+                # 應用融合層 - 確保輸出是96通道
                 fused = self.fusion_layer(fused)
                 fused = self.fusion_norm(fused)
                 fused = self.fusion_act(fused)
@@ -618,15 +624,6 @@ class StudentModel(nn.Module):
             return fused_features
         else:
             return global_fpn_features
-        # 確保所有特徵的通道數為96
-        if global_fpn_features[0].shape[1] != 96:
-            adjusted_features = []
-            for feature in global_fpn_features:
-                # 使用1x1卷積調整通道數
-                channel_adapter = nn.Conv2d(feature.shape[1], 96, kernel_size=1, bias=False).to(feature.device)
-                adjusted_feature = channel_adapter(feature)
-                adjusted_features.append(adjusted_feature)
-            return adjusted_features
     
     def forward(self, x, targets=None):
         """前向傳播"""
