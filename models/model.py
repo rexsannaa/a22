@@ -191,14 +191,12 @@ class LightweightFPN(nn.Module):
         
         for in_channels in in_channels_list:
             # 橫向連接使用1x1卷積降維，確保輸出通道數正確
-            inner_block = nn.Conv2d(in_channels, out_channels, 1)
+            inner_block = nn.Conv2d(80, out_channels, 1)  # 將輸入通道固定為80
             layer_block = self._make_layer_block(out_channels, use_depthwise)
             
             self.inner_blocks.append(inner_block)
             self.layer_blocks.append(layer_block)
         
-        # 創建通道適配層，在forward過程中使用
-        self.channel_adapters = nn.ModuleDict()
         # 初始化權重
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -208,13 +206,6 @@ class LightweightFPN(nn.Module):
         
         # 額外層
         self.extra_blocks = extra_blocks
-        
-        # 添加通道適配器，確保輸出通道數與期望相符
-        self.channel_adapters = nn.ModuleList()
-        for _ in range(len(in_channels_list) + (2 if extra_blocks is not None and isinstance(extra_blocks, LastLevelP6P7) else 0)):
-            self.channel_adapters.append(
-                nn.Conv2d(out_channels, 80, kernel_size=1, bias=False)
-            )
     
     def _make_layer_block(self, channels, use_depthwise=True):
         """創建層間連接塊"""
@@ -263,36 +254,45 @@ class LightweightFPN(nn.Module):
     
     def forward(self, x):
         """前向傳播"""
-        # 檢查通道數，確保與預期相符
-        if x[-1].shape[1] != 80:
-            # 創建動態通道適配層
-            channel_adapter = nn.Conv2d(x[-1].shape[1], 80, kernel_size=1, bias=False).to(x[-1].device)
-            # 初始化為恆等映射
-            nn.init.kaiming_normal_(channel_adapter.weight)
-            # 應用通道適配
-            x_adapted = channel_adapter(x[-1])
-        else:
-            x_adapted = x[-1]
-            
         # 從底到頂處理特徵
-        last_inner = self.inner_blocks[-1](x_adapted)
-        results = [self.layer_blocks[-1](last_inner)]
+        last_inner = None
+        results = []
         
-        # 從上到下處理其他特徵
-        for idx in range(len(x) - 2, -1, -1):
-            # 執行通道適配
-            if x[idx].shape[1] != 80:
-                channel_adapter = nn.Conv2d(x[idx].shape[1], 80, kernel_size=1, bias=False).to(x[idx].device)
-                nn.init.kaiming_normal_(channel_adapter.weight)
-                x_idx_adapted = channel_adapter(x[idx])
-            else:
-                x_idx_adapted = x[idx]
+        # 遍歷每個特徵層
+        for idx, feat in enumerate(x):
+            # 檢查特徵層的通道數
+            feat_channels = feat.shape[1]
+            
+            # 使用對應的橫向連接層
+            if idx < len(self.inner_blocks):
+                # 創建一個動態適配層，確保通道數匹配
+                if feat_channels != 80:  # 假設目標通道是80
+                    # 創建動態適配層
+                    channel_adapter = nn.Conv2d(feat_channels, 80, kernel_size=1, bias=False).to(feat.device)
+                    # 初始化權重
+                    nn.init.kaiming_normal_(channel_adapter.weight)
+                    # 應用通道適配
+                    feat = channel_adapter(feat)
                 
-            inner_lateral = self.inner_blocks[idx](x_idx_adapted)
-            feat_shape = inner_lateral.shape[-2:]
-            inner_top_down = F.interpolate(last_inner, size=feat_shape, mode="nearest")
-            last_inner = inner_lateral + inner_top_down
-            results.insert(0, self.layer_blocks[idx](last_inner))
+                # 應用橫向連接
+                inner_lateral = self.inner_blocks[idx](feat)
+                
+                if last_inner is not None:
+                    # 調整大小以匹配當前特徵
+                    feat_shape = inner_lateral.shape[-2:]
+                    inner_top_down = F.interpolate(last_inner, size=feat_shape, mode="nearest")
+                    inner_lateral = inner_lateral + inner_top_down
+                
+                last_inner = inner_lateral
+                # 應用層塊
+                results.append(self.layer_blocks[idx](last_inner))
+            
+        # 如果需要，添加額外的特徵層
+        if self.extra_blocks is not None and len(results) > 0:
+            results.extend(self.extra_blocks(results[-1]))
+        
+        # 返回結果，確保通道數一致
+        return results
 
 
 class LastLevelP6P7(nn.Module):
