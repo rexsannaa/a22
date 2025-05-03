@@ -371,55 +371,75 @@ class DistillationTrainer:
         if is_teacher and hasattr(model, 'detector') and hasattr(model.detector, 'backbone'):
             with torch.no_grad():
                 try:
-                    # 使用特定於教師模型的方法提取特徵
+                    # 直接通過模型的backbone提取特徵
                     if hasattr(model.detector.backbone, 'body') and isinstance(model.detector.backbone.body, nn.Module):
+                        # 通過主幹特徵提取器獲取特徵
                         backbone = model.detector.backbone.body
+                        features = backbone(batched_images)
                         
-                        # 直接處理張量而不是列表
-                        x = batched_images
-                        if hasattr(backbone, 'conv1'):
-                            x = backbone.conv1(x)
-                            x = backbone.bn1(x)
-                            x = backbone.relu(x)
-                            x = backbone.maxpool(x)
-                        
-                            # 按順序通過層
-                            if hasattr(backbone, 'layer1'):
-                                layer1 = backbone.layer1(x)
-                                features['layer1'] = layer1
-                                
-                                if hasattr(backbone, 'layer2'):
-                                    layer2 = backbone.layer2(layer1)
-                                    features['layer2'] = layer2
-                                    
-                                    if hasattr(backbone, 'layer3'):
-                                        layer3 = backbone.layer3(layer2)
-                                        features['layer3'] = layer3
-                                        
-                                        if hasattr(backbone, 'layer4'):
-                                            layer4 = backbone.layer4(layer3)
-                                            features['layer4'] = layer4
+                        # 如果特徵是OrderedDict或dict，則直接返回
+                        if isinstance(features, OrderedDict) or isinstance(features, dict):
+                            return features
+                        else:
+                            # 如果是列表或其他格式，轉換為字典
+                            feature_dict = {}
+                            for i, feat in enumerate(features):
+                                feature_dict[f'layer{i+1}'] = feat
+                            return feature_dict
                     else:
-                        # 使用替代方法，直接通過模型獲取特徵
-                        # 確保輸入是單個張量而不是列表
+                        # 直接通過backbone獲取特徵
                         features = model.detector.backbone(batched_images)
-                        # 轉換鍵名
-                        if isinstance(features, dict) or isinstance(features, OrderedDict):
+                        
+                        # 轉換特徵格式
+                        if isinstance(features, OrderedDict) or isinstance(features, dict):
                             renamed_features = {}
                             for i, (k, v) in enumerate(features.items()):
                                 renamed_features[f'layer{i+1}'] = v
-                            features = renamed_features
-                    
+                            return renamed_features
+                        else:
+                            # 如果是其他格式，轉換為字典
+                            feature_dict = {}
+                            for i, feat in enumerate(features):
+                                feature_dict[f'layer{i+1}'] = feat
+                            return feature_dict
                 except Exception as e:
-                    # 如果特徵提取失敗，使用零張量
-                    logger.warning(f"直接特徵提取失敗: {str(e)}，使用零張量替代")
-                    # 使用零張量作為占位符
-                    features = {
-                        'layer1': torch.zeros((batched_images.shape[0], 256, batched_images.shape[2]//4, batched_images.shape[3]//4), device=batched_images.device),
-                        'layer2': torch.zeros((batched_images.shape[0], 512, batched_images.shape[2]//8, batched_images.shape[3]//8), device=batched_images.device),
-                        'layer3': torch.zeros((batched_images.shape[0], 1024, batched_images.shape[2]//16, batched_images.shape[3]//16), device=batched_images.device),
-                        'layer4': torch.zeros((batched_images.shape[0], 2048, batched_images.shape[2]//32, batched_images.shape[3]//32), device=batched_images.device)
-                    }
+                    # 如果特徵提取失敗，使用以下備選方法
+                    try:
+                        # 嘗試手動提取特徵
+                        backbone = model.detector.backbone.body
+                        x = batched_images
+                        
+                        # 依次通過各層
+                        x = backbone.conv1(x)
+                        x = backbone.bn1(x)
+                        x = backbone.relu(x)
+                        x = backbone.maxpool(x)
+                        
+                        # 提取各層特徵
+                        layer1 = backbone.layer1(x)
+                        features['layer1'] = layer1
+                        
+                        layer2 = backbone.layer2(layer1)
+                        features['layer2'] = layer2
+                        
+                        layer3 = backbone.layer3(layer2)
+                        features['layer3'] = layer3
+                        
+                        layer4 = backbone.layer4(layer3)
+                        features['layer4'] = layer4
+                        
+                        return features
+                        
+                    except Exception as e2:
+                        # 如果兩種方法都失敗，使用零張量
+                        logger.warning(f"特徵提取失敗: {str(e)} 及 {str(e2)}，使用零張量替代")
+                        # 使用零張量作為占位符
+                        return {
+                            'layer1': torch.zeros((batched_images.shape[0], 256, batched_images.shape[2]//4, batched_images.shape[3]//4), device=batched_images.device),
+                            'layer2': torch.zeros((batched_images.shape[0], 512, batched_images.shape[2]//8, batched_images.shape[3]//8), device=batched_images.device),
+                            'layer3': torch.zeros((batched_images.shape[0], 1024, batched_images.shape[2]//16, batched_images.shape[3]//16), device=batched_images.device),
+                            'layer4': torch.zeros((batched_images.shape[0], 2048, batched_images.shape[2]//32, batched_images.shape[3]//32), device=batched_images.device)
+                        }
         
         # 對於學生模型 (MobileNet特徵提取)
         elif hasattr(model, 'backbone') and hasattr(model.backbone, 'features'):
@@ -430,6 +450,8 @@ class DistillationTrainer:
                 feature_name = f"features.{name}"
                 if feature_name in ['features.3', 'features.6', 'features.9', 'features.12', 'features.15']:
                     features[feature_name] = x
+            return features
+            
         elif hasattr(model, 'detector') and hasattr(model.detector, 'backbone') and hasattr(model.detector.backbone, 'features'):
             # 針對學生模型的另一種結構
             x = batched_images
@@ -438,6 +460,7 @@ class DistillationTrainer:
                 feature_name = f"features.{name}"
                 if feature_name in ['features.3', 'features.6', 'features.9', 'features.12', 'features.15']:
                     features[feature_name] = x
+            return features
         
         return features
     

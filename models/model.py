@@ -762,20 +762,20 @@ class TeacherModel(nn.Module):
             # 定義錨點生成器
             anchor_sizes = teacher_cfg["rpn"]["anchor_sizes"]
             aspect_ratios = teacher_cfg["rpn"]["aspect_ratios"]
-            # 處理額外層數
-            num_feature_maps = 3
-            if extra_blocks:
-                # LastLevelMaxPool 添加一個額外層
-                if isinstance(extra_blocks, LastLevelMaxPool):
-                    num_feature_maps += 1
-                # LastLevelP6P7 添加兩個額外層
-                elif hasattr(extra_blocks, 'p6') and hasattr(extra_blocks, 'p7'):
-                    num_feature_maps += 2
+
+            # 確定特徵層數
+            if teacher_cfg["fpn"]["extra_blocks"] == "lastlevel_maxpool":
+                # 4 feature maps (P2, P3, P4, P5)
+                num_feature_maps = 4
+            else:
+                # 基本3層特徵圖
+                num_feature_maps = 3
 
             # 創建定制的錨點尺寸和寬高比
+            # 為每個特徵層創建單獨的尺寸元組，而不是列表
             anchor_generator = AnchorGenerator(
-                sizes=tuple([tuple(anchor_sizes)] * num_feature_maps),
-                aspect_ratios=tuple([tuple(aspect_ratios)] * num_feature_maps)
+                sizes=tuple((tuple(anchor_sizes),) * num_feature_maps),
+                aspect_ratios=tuple((tuple(aspect_ratios),) * num_feature_maps)
             )
             
             # 對應到所有特徵圖層的名稱
@@ -820,7 +820,14 @@ class TeacherModel(nn.Module):
                 self.backbone = self.detector.backbone
                 if hasattr(self.backbone, 'body'):
                     self.body = self.backbone.body
-
+            # 明確選擇要使用的特徵層
+            if hasattr(backbone, 'body'):
+                self.return_features = ['layer1', 'layer2', 'layer3', 'layer4']
+                # 確保特徵層正確匹配FPN層
+                selected_layers = self.return_features[-3:]  # 僅使用後三層作為FPN輸入
+                in_channels_list = [backbone_out_channels[layer] for layer in selected_layers]
+            else:
+                in_channels_list = [256, 512, 1024, 2048][-3:]  # 默認通道數
     def forward(self, x, targets=None):
         """前向傳播"""
         # 確保輸入是張量，而不是列表
