@@ -119,14 +119,14 @@ student:
   
   # 雙分支設定 - 全局與局部特徵提取
   dual_branch:
-    enabled: true
-    shared_backbone: true
-    global_branch:
-      fpn_channels: 96
-      attention_type: "se"  # Squeeze-and-Excitation
-    local_branch:
-      fpn_channels: 96
-      attention_type: "defect_specific"  # 缺陷特定注意力
+      enabled: true
+      shared_backbone: true
+      global_branch:
+        fpn_channels: 96
+        attention_type: "se"  # Squeeze-and-Excitation
+      local_branch:
+        fpn_channels: 96
+        attention_type: "defect_specific"  # 缺陷特定注意力
   
   # 特徵提取頸部 - 輕量化FPN設計
   neck:

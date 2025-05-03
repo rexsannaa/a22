@@ -389,11 +389,13 @@ class StudentModel(nn.Module):
             if student_cfg["dual_branch"]["enabled"]:   
                 # 輸入和輸出通道數需要匹配 
                 input_channels = global_fpn_channels + local_fpn_channels  # 來自兩個分支的總輸入通道
-                output_channels = 80  # 修改為80，與後續層的期望匹配
+                
+                # 確保輸出通道數與輸入通道數匹配
+                output_channels = global_fpn_channels  # 使用與全局分支相同的通道數
                                 
                 self.fusion_layer = nn.Conv2d(
                     input_channels,  # 輸入通道 (global_fpn_channels + local_fpn_channels)
-                    output_channels,  # 輸出通道 (80)
+                    output_channels,  # 輸出通道與全局分支相同
                     kernel_size=1,
                     bias=False
                 )
