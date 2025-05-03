@@ -286,16 +286,25 @@ class LightweightFPN(nn.Module):
                 last_inner = inner_lateral
                 # 應用層塊
                 results.append(self.layer_blocks[idx](last_inner))
-            
+        
         # 如果需要，添加額外的特徵層
         if self.extra_blocks is not None and len(results) > 0:
             results.extend(self.extra_blocks(results[-1]))
         
-        # 返回結果，確保通道數一致
-        return results
+        # 最終通道調整 - 需要增加此塊代碼
+        adjusted_results = []
+        for result in results:
+            # 將所有結果的通道數調整為96
+            if result.shape[1] != 96:
+                channel_adapter = nn.Conv2d(result.shape[1], 96, kernel_size=1, bias=False).to(result.device)
+                nn.init.kaiming_normal_(channel_adapter.weight)
+                result = channel_adapter(result)
+            adjusted_results.append(result)
+        
+        # 返回調整後的結果
+        return adjusted_results
 
 
-# 當前的 LastLevelP6P7 類:
 class LastLevelP6P7(nn.Module):
     """額外添加P6和P7層，用於檢測大範圍物體"""
     
@@ -308,6 +317,7 @@ class LastLevelP6P7(nn.Module):
             out_channels: 輸出通道數
         """
         super(LastLevelP6P7, self).__init__()
+        # 修改 p6 的輸入通道數，確保與實際輸入匹配
         self.p6 = nn.Conv2d(in_channels, out_channels, 3, stride=2, padding=1)
         self.p7 = nn.Conv2d(out_channels, out_channels, 3, stride=2, padding=1)
         self.relu = nn.ReLU(inplace=True)
@@ -321,38 +331,14 @@ class LastLevelP6P7(nn.Module):
     
     def forward(self, x):
         """前向傳播"""
-        p6 = self.p6(x[-1])
-        p7 = self.p7(self.relu(p6))
-        return [p6, p7]
-
-
-class LastLevelP6P7(nn.Module):
-    """額外添加P6和P7層，用於檢測大範圍物體"""
-    
-    def __init__(self, in_channels, out_channels):
-        """
-        初始化P6P7層
-        
-        Args:
-            in_channels: 輸入通道數
-            out_channels: 輸出通道數
-        """
-        super(LastLevelP6P7, self).__init__()
-        # 修改 p6 的輸入通道數為 80，與實際輸入匹配
-        self.p6 = nn.Conv2d(80, out_channels, 3, stride=2, padding=1)
-        self.p7 = nn.Conv2d(out_channels, out_channels, 3, stride=2, padding=1)
-        self.relu = nn.ReLU(inplace=True)
-        
-        # 初始化權重
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-    
-    def forward(self, x):
-        """前向傳播"""
-        p6 = self.p6(x[-1])
+        # 確保輸入是列表並且有元素
+        if isinstance(x, list) and len(x) > 0:
+            input_tensor = x[-1]
+        else:
+            input_tensor = x
+            
+        # 應用卷積層並確保通道數正確
+        p6 = self.p6(input_tensor)
         p7 = self.p7(self.relu(p6))
         return [p6, p7]
 
@@ -430,12 +416,12 @@ class StudentModel(nn.Module):
             in_channels_list = backbone_out_channels[-3:]  # 使用最後三層特徵
             
             # 全局FPN
-            global_fpn_channels = 80  # 修正為80個通道，與特徵提取適配層期望的通道數匹配
+            global_fpn_channels = 96  # 修改為96，確保與後續層匹配
 
             if student_cfg["neck"]["extra_blocks"] == "lastlevel_p6p7":
                 self.global_fpn_extra_blocks = LastLevelP6P7(
-                    80,  # 直接使用固定的 80 作為輸入通道
-                    global_fpn_channels  # 這裡的值是 80
+                    in_channels=in_channels_list[-1],  # 使用正確的輸入通道
+                    out_channels=global_fpn_channels
                 )
             else:
                 self.global_fpn_extra_blocks = None
