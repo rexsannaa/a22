@@ -22,48 +22,49 @@ try:
     # 嘗試從舊位置導入
     from torchvision.ops import misc as misc_nn_ops
     IntermediateLayerGetter = misc_nn_ops.IntermediateLayerGetter
-    LastLevelMaxPool = misc_nn_ops.LastLevelMaxPool
 except AttributeError:
     # 如果失敗，從新位置導入
     from torchvision.models._utils import IntermediateLayerGetter
-    # 對於 LastLevelMaxPool，我們需要檢查它是否在 feature_pyramid_network 模組中
-    try:
-        from torchvision.ops.feature_pyramid_network import LastLevelMaxPool
-    except (ImportError, AttributeError):
-        class LastLevelMaxPool(nn.Module):
-            """
-            Applies a max_pool2d on top of the last feature map
-            """
-            def __init__(self):
-                super(LastLevelMaxPool, self).__init__()
 
-            def forward(self, x):
-                if isinstance(x, torch.Tensor):
-                    return [F.max_pool2d(x, kernel_size=1, stride=2, padding=0)]
-                elif isinstance(x, list) and len(x) > 0:
-                    return [F.max_pool2d(x[-1], kernel_size=1, stride=2, padding=0)]
-                elif isinstance(x, OrderedDict):
-                    # 獲取最後一個特徵
-                    keys = list(x.keys())
-                    if not keys:
-                        return OrderedDict()
-                    
-                    last_key = keys[-1]
-                    last_feature = x[last_key]
-                    
-                    # 應用 max_pool
-                    pooled = F.max_pool2d(last_feature, kernel_size=1, stride=2, padding=0)
-                    
-                    # 創建新的 key
-                    new_key = str(int(last_key) + 1) if last_key.isdigit() else "pooled"
-                    
-                    # 返回包含原始特徵和新特徵的 OrderedDict
-                    result = OrderedDict([(k, v) for k, v in x.items()])
-                    result[new_key] = pooled
-                    
-                    return result
-                else:
-                    return []
+# 自定義 LastLevelMaxPool 實作
+class LastLevelMaxPool(nn.Module):
+    """自訂LastLevelMaxPool實作，解決相容性問題"""
+    
+    def __init__(self):
+        super(LastLevelMaxPool, self).__init__()
+
+    def forward(self, x):
+        # 處理不同的輸入類型
+        if isinstance(x, torch.Tensor):
+            return [F.max_pool2d(x, kernel_size=1, stride=2, padding=0)]
+        elif isinstance(x, list) and len(x) > 0:
+            return [F.max_pool2d(x[-1], kernel_size=1, stride=2, padding=0)]
+        elif isinstance(x, dict) or isinstance(x, OrderedDict):
+            # 處理字典輸入
+            keys = list(x.keys())
+            if not keys:
+                return x.__class__()
+                
+            last_key = keys[-1]
+            last_feature = x[last_key]
+            
+            # 應用池化
+            pooled = F.max_pool2d(last_feature, kernel_size=1, stride=2, padding=0)
+            
+            # 創建新的key
+            new_key = str(int(last_key) + 1) if last_key.isdigit() else "pooled"
+            
+            # 返回包含原始特徵和新特徵的字典
+            if isinstance(x, OrderedDict):
+                result = OrderedDict([(k, v) for k, v in x.items()])
+            else:
+                result = {k: v for k, v in x.items()}
+                
+            result[new_key] = pooled
+            
+            return result
+        else:
+            return []
 from collections import OrderedDict
 import logging
 import math
