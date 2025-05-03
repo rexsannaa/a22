@@ -69,7 +69,7 @@ from collections import OrderedDict
 import logging
 import math
 import os
-
+from collections import OrderedDict
 # 配置日誌
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -760,14 +760,26 @@ class TeacherModel(nn.Module):
             # 定義錨點生成器
             anchor_sizes = teacher_cfg["rpn"]["anchor_sizes"]
             aspect_ratios = teacher_cfg["rpn"]["aspect_ratios"]
+            # 處理額外層數
+            num_feature_maps = 3
+            if extra_blocks:
+                # LastLevelMaxPool 添加一個額外層
+                if isinstance(extra_blocks, LastLevelMaxPool):
+                    num_feature_maps += 1
+                # LastLevelP6P7 添加兩個額外層
+                elif hasattr(extra_blocks, 'p6') and hasattr(extra_blocks, 'p7'):
+                    num_feature_maps += 2
+
+            # 創建定制的錨點尺寸和寬高比
             anchor_generator = AnchorGenerator(
-                sizes=tuple([tuple(anchor_sizes)] * (3 + (1 if extra_blocks else 0))),
-                aspect_ratios=tuple([tuple(aspect_ratios)] * (3 + (1 if extra_blocks else 0)))
+                sizes=tuple([tuple(anchor_sizes)] * num_feature_maps),
+                aspect_ratios=tuple([tuple(aspect_ratios)] * num_feature_maps)
             )
             
-            # 定義ROI池化
+            # 對應到所有特徵圖層的名稱
+            featmap_names = [str(i) for i in range(num_feature_maps)]
             roi_pooler = MultiScaleRoIAlign(
-                featmap_names=["0", "1", "2", "3"][:3 + (1 if extra_blocks else 0)],
+                featmap_names=featmap_names,
                 output_size=teacher_cfg["rpn"]["roi_align_output_size"],
                 sampling_ratio=2
             )
@@ -802,12 +814,32 @@ class TeacherModel(nn.Module):
             
             logger.info("教師模型初始化完成")
     
-    def forward(self, x, targets=None):
-        """前向傳播"""
-        if self.training and targets is None:
-            raise ValueError("在訓練模式中，targets不應為None")
+    def forward(self, x):
+        # 提取主幹特徵
+        x = self.body(x)
+        
+        # 確保至少有3個特徵層
+        if len(x) < 3:
+            logger.warning(f"主幹網絡只提供了 {len(x)} 個特徵層，需要至少3個")
             
-        return self.detector(x, targets)
+            # 如果缺少特徵層，複製並調整現有層
+            keys = list(x.keys())
+            if len(keys) > 0:
+                last_feature = x[keys[-1]]
+                for i in range(len(keys), 3):
+                    new_key = str(i)
+                    # 下採樣上一層特徵
+                    x[new_key] = F.max_pool2d(last_feature, kernel_size=2, stride=2)
+                    last_feature = x[new_key]
+        
+        # 指定需要的特徵層
+        selected_features = {}
+        for i, key in enumerate(sorted(x.keys(), key=lambda k: int(k) if k.isdigit() else float('inf'))[:3]):
+            selected_features[str(i+1)] = x[key]
+        
+        # 應用 FPN
+        x = self.fpn(selected_features)
+        return x
 
 
 class BackboneWithBatchNorm(nn.Module):
@@ -874,54 +906,48 @@ class FeaturePyramidNetwork(nn.Module):
         self.out_channels = out_channels  # 添加輸出通道屬性
     
     def forward(self, x):
-        """前向傳播"""
-        # 檢查輸入類型
+        # 檢查並提取特徵
         if isinstance(x, dict):
-            # 如果輸入是字典，轉換為列表
-            x_list = []
-            # 僅使用我們知道的通道數對應的特徵
-            for i in range(len(self.in_channels_list)):
-                key = str(i + 1)  # layer2, layer3, layer4 對應 '1', '2', '3'
-                if key in x:
-                    x_list.append(x[key])
-                else:
-                    logger.warning(f"找不到特徵層 {key}")
-                    return OrderedDict([("0", torch.zeros_like(x[list(x.keys())[0]]))])  # 返回零張量以避免崩潰
+            # 轉換字典順序確保正確的特徵順序
+            keys = sorted([k for k in x.keys() if k.isdigit()], key=int)
+            features = [x[k] for k in keys]
+        elif isinstance(x, (list, tuple)):
+            features = list(x)
         else:
-            # 如果已經是列表或元組
-            x_list = x
-
-        # 檢查通道對應
-        if len(x_list) != len(self.in_channels_list):
-            logger.warning(f"輸入特徵數量 ({len(x_list)}) 與期望的數量 ({len(self.in_channels_list)}) 不匹配")
-            # 如果特徵數量不匹配，做最好的努力
-            if len(x_list) < len(self.in_channels_list):
-                # 如果特徵太少，重複最後一個
-                while len(x_list) < len(self.in_channels_list):
-                    x_list.append(x_list[-1])
+            raise ValueError("輸入必須是特徵字典或特徵列表")
+        
+        # 確保特徵數量與處理層數一致
+        if len(features) != len(self.inner_blocks):
+            logger.warning(f"特徵數量 ({len(features)}) 與處理層數 ({len(self.inner_blocks)}) 不匹配")
+            # 裁剪或擴展特徵列表
+            if len(features) > len(self.inner_blocks):
+                features = features[:len(self.inner_blocks)]
             else:
-                # 如果特徵太多，只使用我們需要的
-                x_list = x_list[:len(self.in_channels_list)]
+                # 複製最後一個特徵以填充
+                last_feature = features[-1]
+                while len(features) < len(self.inner_blocks):
+                    downsampled = F.avg_pool2d(last_feature, kernel_size=2, stride=2)
+                    features.append(downsampled)
+                    last_feature = downsampled
         
-        # 從底到頂處理特徵
-        # 檢查通道正確性
-        for i, (feat, expected_channels) in enumerate(zip(x_list, self.in_channels_list)):
-            if feat.shape[1] != expected_channels:
-                logger.warning(f"特徵 {i} 的通道數 ({feat.shape[1]}) 與期望的通道數 ({expected_channels}) 不匹配")
-                # 可以在這裡添加通道適配層，但這會更改模型架構
-        
-        # 實際 FPN 前向傳播
+        # 從最深層開始處理特徵
         idx = len(self.inner_blocks) - 1
-        last_inner = self.inner_blocks[idx](x_list[idx])
-        results = [self.layer_blocks[idx](last_inner)]
+        inner_lateral = self.inner_blocks[idx](features[idx])
+        results = [self.layer_blocks[idx](inner_lateral)]
         
         # 從上到下處理其他特徵
-        for idx in range(len(self.inner_blocks) - 2, -1, -1):
-            inner_lateral = self.inner_blocks[idx](x_list[idx])
+        for i in range(len(self.inner_blocks)-2, -1, -1):
+            # 檢查特徵尺寸並調整
+            if i >= len(features):
+                logger.error(f"特徵索引 {i} 超出範圍 {len(features)}")
+                continue
+                
+            feat = features[i]
+            inner_lateral = self.inner_blocks[i](feat)
             feat_shape = inner_lateral.shape[-2:]
-            inner_top_down = F.interpolate(last_inner, size=feat_shape, mode="nearest")
-            last_inner = inner_lateral + inner_top_down
-            results.insert(0, self.layer_blocks[idx](last_inner))
+            inner_top_down = F.interpolate(results[0], size=feat_shape, mode="nearest")
+            inner_lateral = inner_lateral + inner_top_down
+            results.insert(0, self.layer_blocks[i](inner_lateral))
         
         # 處理額外層
         if self.extra_blocks is not None:
