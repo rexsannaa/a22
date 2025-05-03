@@ -317,7 +317,7 @@ class LastLevelP6P7(nn.Module):
             out_channels: 輸出通道數
         """
         super(LastLevelP6P7, self).__init__()
-        # 修改 p6 的輸入通道數，確保與實際輸入匹配
+        # 修改 p6 的輸入通道數為實際通道數，而不是假設的值
         self.p6 = nn.Conv2d(in_channels, out_channels, 3, stride=2, padding=1)
         self.p7 = nn.Conv2d(out_channels, out_channels, 3, stride=2, padding=1)
         self.relu = nn.ReLU(inplace=True)
@@ -337,11 +337,24 @@ class LastLevelP6P7(nn.Module):
         else:
             input_tensor = x
             
-        # 應用卷積層並確保通道數正確
+        # 檢查通道數以進行適配
+        if input_tensor.shape[1] != 576 and hasattr(self, 'p6') and self.p6.in_channels == 576:
+            # 動態創建一個新的卷積層適配通道數
+            device = input_tensor.device
+            actual_channels = input_tensor.shape[1]
+            
+            # 創建新的p6層並將其移到正確的設備上
+            self.p6 = nn.Conv2d(actual_channels, self.p7.in_channels, 3, stride=2, padding=1).to(device)
+            
+            # 初始化權重
+            nn.init.kaiming_normal_(self.p6.weight, mode="fan_out", nonlinearity="relu")
+            if self.p6.bias is not None:
+                nn.init.zeros_(self.p6.bias)
+            
+        # 應用卷積層
         p6 = self.p6(input_tensor)
         p7 = self.p7(self.relu(p6))
         return [p6, p7]
-
 
 class StudentModel(nn.Module):
     """
@@ -420,7 +433,7 @@ class StudentModel(nn.Module):
 
             if student_cfg["neck"]["extra_blocks"] == "lastlevel_p6p7":
                 self.global_fpn_extra_blocks = LastLevelP6P7(
-                    in_channels=in_channels_list[-1],  # 使用正確的輸入通道
+                    in_channels=96,  # 修改為實際使用的通道數
                     out_channels=global_fpn_channels
                 )
             else:
