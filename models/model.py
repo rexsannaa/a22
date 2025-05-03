@@ -295,6 +295,7 @@ class LightweightFPN(nn.Module):
         return results
 
 
+# 當前的 LastLevelP6P7 類:
 class LastLevelP6P7(nn.Module):
     """額外添加P6和P7層，用於檢測大範圍物體"""
     
@@ -308,6 +309,37 @@ class LastLevelP6P7(nn.Module):
         """
         super(LastLevelP6P7, self).__init__()
         self.p6 = nn.Conv2d(in_channels, out_channels, 3, stride=2, padding=1)
+        self.p7 = nn.Conv2d(out_channels, out_channels, 3, stride=2, padding=1)
+        self.relu = nn.ReLU(inplace=True)
+        
+        # 初始化權重
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+    
+    def forward(self, x):
+        """前向傳播"""
+        p6 = self.p6(x[-1])
+        p7 = self.p7(self.relu(p6))
+        return [p6, p7]
+
+
+class LastLevelP6P7(nn.Module):
+    """額外添加P6和P7層，用於檢測大範圍物體"""
+    
+    def __init__(self, in_channels, out_channels):
+        """
+        初始化P6P7層
+        
+        Args:
+            in_channels: 輸入通道數
+            out_channels: 輸出通道數
+        """
+        super(LastLevelP6P7, self).__init__()
+        # 修改 p6 的輸入通道數為 80，與實際輸入匹配
+        self.p6 = nn.Conv2d(80, out_channels, 3, stride=2, padding=1)
         self.p7 = nn.Conv2d(out_channels, out_channels, 3, stride=2, padding=1)
         self.relu = nn.ReLU(inplace=True)
         
@@ -402,8 +434,8 @@ class StudentModel(nn.Module):
 
             if student_cfg["neck"]["extra_blocks"] == "lastlevel_p6p7":
                 self.global_fpn_extra_blocks = LastLevelP6P7(
-                    backbone_out_channels[-1], 
-                    global_fpn_channels
+                    80,  # 直接使用固定的 80 作為輸入通道
+                    global_fpn_channels  # 這裡的值是 80
                 )
             else:
                 self.global_fpn_extra_blocks = None
@@ -419,9 +451,9 @@ class StudentModel(nn.Module):
             if student_cfg["dual_branch"]["enabled"]:
                 local_fpn_channels = 80
                 if student_cfg["neck"]["extra_blocks"] == "lastlevel_p6p7":
-                    self.local_fpn_extra_blocks = LastLevelP6P7(
-                        backbone_out_channels[-1], 
-                        local_fpn_channels
+                    self.global_fpn_extra_blocks = LastLevelP6P7(
+                        80,  # 直接使用固定的 80 作為輸入通道
+                        global_fpn_channels  # 這裡的值是 80
                     )
                 else:
                     self.local_fpn_extra_blocks = None
