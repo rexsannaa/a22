@@ -762,20 +762,20 @@ class TeacherModel(nn.Module):
             # 定義錨點生成器
             anchor_sizes = teacher_cfg["rpn"]["anchor_sizes"]
             aspect_ratios = teacher_cfg["rpn"]["aspect_ratios"]
+            # 處理額外層數
+            num_feature_maps = 3
+            if extra_blocks:
+                # LastLevelMaxPool 添加一個額外層
+                if isinstance(extra_blocks, LastLevelMaxPool):
+                    num_feature_maps += 1
+                # LastLevelP6P7 添加兩個額外層
+                elif hasattr(extra_blocks, 'p6') and hasattr(extra_blocks, 'p7'):
+                    num_feature_maps += 2
 
-            # 確定特徵層數
-            if teacher_cfg["fpn"]["extra_blocks"] == "lastlevel_maxpool":
-                # 4 feature maps (P2, P3, P4, P5)
-                num_feature_maps = 4
-            else:
-                # 基本3層特徵圖
-                num_feature_maps = 3
-
-            # 創建定制的錨點尺寸和寬高比
-            # 為每個特徵層創建單獨的尺寸元組，而不是列表
+            # 創建定制的錨點尺寸和寬高比 - 修正格式為 ((size1,), (size2,), ...)
             anchor_generator = AnchorGenerator(
-                sizes=tuple((tuple(anchor_sizes),) * num_feature_maps),
-                aspect_ratios=tuple((tuple(aspect_ratios),) * num_feature_maps)
+                sizes=tuple((tuple(anchor_sizes),) for _ in range(num_feature_maps)),
+                aspect_ratios=tuple((tuple(aspect_ratios),) for _ in range(num_feature_maps))
             )
             
             # 對應到所有特徵圖層的名稱
