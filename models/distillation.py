@@ -546,23 +546,27 @@ class DistillationTrainer:
                     
                     # 處理不同類型的返回值
                     if isinstance(loss_dict, dict):
-                        # 如果是字典，直接使用 values()
-                        loss = sum(loss for loss in loss_dict.values())
+                        # 如果是字典，計算所有損失值的總和
+                        loss = sum(loss.item() if isinstance(loss, torch.Tensor) else loss for loss in loss_dict.values())
                     elif isinstance(loss_dict, list):
-                        # 如果是列表，直接求和
-                        loss = sum(loss_dict)
+                        # 如果是列表，處理每個元素
+                        loss = 0
+                        for item in loss_dict:
+                            if isinstance(item, torch.Tensor):
+                                loss += item.item()
+                            elif isinstance(item, (int, float)):
+                                loss += item
                     elif isinstance(loss_dict, torch.Tensor):
                         # 如果是張量，直接使用
-                        loss = loss_dict
+                        loss = loss_dict.item()
                     else:
                         # 其他情況，記錄警告並使用零損失
                         logger.warning(f"未知的損失類型: {type(loss_dict)}")
-                        loss = torch.tensor(0.0, device=self.device)
+                        loss = 0.0
                         
-                    total_loss += loss.item()
+                    total_loss += loss
                 except Exception as e:
                     logger.warning(f"計算驗證損失時出錯: {str(e)}")
-                    loss = torch.tensor(0.0, device=self.device)
                     total_loss += 0.0
                 
                 # 獲取預測
@@ -587,7 +591,7 @@ class DistillationTrainer:
             'predictions': all_predictions,
             'targets': all_targets
         }
-    
+        
     def save_checkpoint(self, epoch, save_path, metrics=None):
         """
         保存檢查點

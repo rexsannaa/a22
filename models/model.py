@@ -30,7 +30,6 @@ except AttributeError:
     try:
         from torchvision.ops.feature_pyramid_network import LastLevelMaxPool
     except (ImportError, AttributeError):
-        # 如果找不到，我們自己定義一個
         class LastLevelMaxPool(nn.Module):
             """
             Applies a max_pool2d on top of the last feature map
@@ -44,21 +43,26 @@ except AttributeError:
                 elif isinstance(x, list) and len(x) > 0:
                     return [F.max_pool2d(x[-1], kernel_size=1, stride=2, padding=0)]
                 elif isinstance(x, OrderedDict):
-                    # 處理 OrderedDict 情況
-                    names = list(x.keys())
-                    if not names:
-                        return []
-                    last_feature = x[names[-1]]
+                    # 獲取最後一個特徵
+                    keys = list(x.keys())
+                    if not keys:
+                        return OrderedDict()
+                    
+                    last_key = keys[-1]
+                    last_feature = x[last_key]
+                    
                     # 應用 max_pool
                     pooled = F.max_pool2d(last_feature, kernel_size=1, stride=2, padding=0)
-                    # 創建新的OrderedDict返回
-                    result = OrderedDict()
-                    for k in x.keys():
-                        result[k] = x[k]
-                    result[str(len(names))] = pooled
+                    
+                    # 創建新的 key
+                    new_key = str(int(last_key) + 1) if last_key.isdigit() else "pooled"
+                    
+                    # 返回包含原始特徵和新特徵的 OrderedDict
+                    result = OrderedDict([(k, v) for k, v in x.items()])
+                    result[new_key] = pooled
+                    
                     return result
                 else:
-                    # 對於其他情況，返回空列表
                     return []
 from collections import OrderedDict
 import logging
