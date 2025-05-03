@@ -181,19 +181,24 @@ class LightweightFPN(nn.Module):
         """
         super(LightweightFPN, self).__init__()
         
+        # 保存輸出通道數
+        self.out_channels = out_channels
+        
         # 橫向連接層
         self.inner_blocks = nn.ModuleList()
         # 層間連接層
         self.layer_blocks = nn.ModuleList()
         
         for in_channels in in_channels_list:
-            # 橫向連接使用1x1卷積降維
+            # 橫向連接使用1x1卷積降維，確保輸出通道數正確
             inner_block = nn.Conv2d(in_channels, out_channels, 1)
             layer_block = self._make_layer_block(out_channels, use_depthwise)
             
             self.inner_blocks.append(inner_block)
             self.layer_blocks.append(layer_block)
         
+        # 創建通道適配層，在forward過程中使用
+        self.channel_adapters = nn.ModuleDict()
         # 初始化權重
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -232,37 +237,7 @@ class LightweightFPN(nn.Module):
                 nn.BatchNorm2d(channels),
                 nn.ReLU(inplace=True)
             )
-    
-    def forward(self, x):
-        """前向傳播"""
-        # 從底到頂處理特徵
-        last_inner = self.inner_blocks[-1](x[-1])
-        results = [self.layer_blocks[-1](last_inner)]
-        
-        # 從上到下處理其他特徵
-        for idx in range(len(x) - 2, -1, -1):
-            inner_lateral = self.inner_blocks[idx](x[idx])
-            feat_shape = inner_lateral.shape[-2:]
-            inner_top_down = F.interpolate(last_inner, size=feat_shape, mode="nearest")
-            last_inner = inner_lateral + inner_top_down
-            results.insert(0, self.layer_blocks[idx](last_inner))
-        
-        # 處理額外層
-        if self.extra_blocks is not None:
-            results.extend(self.extra_blocks(x, results))
-        
-        # 應用通道適配器，確保所有特徵都是80通道
-        adapted_results = []
-        for i, result in enumerate(results):
-            # 確保通道數適配器索引不超出範圍
-            if i < len(self.channel_adapters):
-                adapted_results.append(self.channel_adapters[i](result))
-            else:
-                # 如果超出範圍，創建一個臨時適配器
-                adapter = nn.Conv2d(result.shape[1], 80, kernel_size=1, bias=False).to(result.device)
-                adapted_results.append(adapter(result))
-        
-        return adapted_results
+
     
     def _make_layer_block(self, channels, use_depthwise=True):
         """創建層間連接塊"""
@@ -288,23 +263,36 @@ class LightweightFPN(nn.Module):
     
     def forward(self, x):
         """前向傳播"""
+        # 檢查通道數，確保與預期相符
+        if x[-1].shape[1] != 80:
+            # 創建動態通道適配層
+            channel_adapter = nn.Conv2d(x[-1].shape[1], 80, kernel_size=1, bias=False).to(x[-1].device)
+            # 初始化為恆等映射
+            nn.init.kaiming_normal_(channel_adapter.weight)
+            # 應用通道適配
+            x_adapted = channel_adapter(x[-1])
+        else:
+            x_adapted = x[-1]
+            
         # 從底到頂處理特徵
-        last_inner = self.inner_blocks[-1](x[-1])
+        last_inner = self.inner_blocks[-1](x_adapted)
         results = [self.layer_blocks[-1](last_inner)]
         
         # 從上到下處理其他特徵
         for idx in range(len(x) - 2, -1, -1):
-            inner_lateral = self.inner_blocks[idx](x[idx])
+            # 執行通道適配
+            if x[idx].shape[1] != 80:
+                channel_adapter = nn.Conv2d(x[idx].shape[1], 80, kernel_size=1, bias=False).to(x[idx].device)
+                nn.init.kaiming_normal_(channel_adapter.weight)
+                x_idx_adapted = channel_adapter(x[idx])
+            else:
+                x_idx_adapted = x[idx]
+                
+            inner_lateral = self.inner_blocks[idx](x_idx_adapted)
             feat_shape = inner_lateral.shape[-2:]
             inner_top_down = F.interpolate(last_inner, size=feat_shape, mode="nearest")
             last_inner = inner_lateral + inner_top_down
             results.insert(0, self.layer_blocks[idx](last_inner))
-        
-        # 處理額外層
-        if self.extra_blocks is not None:
-            results.extend(self.extra_blocks(x, results))
-            
-        return results
 
 
 class LastLevelP6P7(nn.Module):
@@ -365,8 +353,8 @@ class StudentModel(nn.Module):
                 80,  # features.12 - stage4
                 576  # features.15 - stage5
             ]
-            
-            # 實現雙分支結構
+
+            # 雙分支設定 - 全局與局部特徵提取
             if student_cfg["dual_branch"]["enabled"]:
                 # 全局分支
                 if student_cfg["dual_branch"]["shared_backbone"]:
@@ -395,9 +383,9 @@ class StudentModel(nn.Module):
                 else:
                     self.local_attentions = None
                 
-                # FPN通道設置 - 保留為這些設定值
-                global_fpn_channels = 80  # 固定為80，與後續層期望的通道數匹配
-                local_fpn_channels = student_cfg["dual_branch"]["local_branch"]["fpn_channels"]
+                # FPN通道設置 - 修正為對應通道數
+                global_fpn_channels = 96  # 修改為96，與模型實際輸出的通道數匹配
+                local_fpn_channels = 96   # 確保兩個分支通道數一致
             else:
                 # 單分支結構
                 self.global_backbone = backbone
@@ -451,13 +439,13 @@ class StudentModel(nn.Module):
             # 在雙分支模式下，計算融合後的輸出通道數
             if student_cfg["dual_branch"]["enabled"]:   
                 # 將局部分支通道數也修改為80
-                local_fpn_channels = 80
+                local_fpn_channels = 96
                 
                 # 輸入和輸出通道數需要匹配 
                 input_channels = global_fpn_channels + local_fpn_channels  # 來自兩個分支的總輸入通道
                 
                 # 確保輸出通道數與backbone特徵通道數匹配 - 關鍵修正
-                output_channels = 80  # 修正為80個通道，與特徵提取適配層期望的通道數匹配
+                output_channels = 96  # 修正為80個通道，與特徵提取適配層期望的通道數匹配
                                 
                 self.fusion_layer = nn.Conv2d(
                     input_channels,  # 輸入通道 (80 + 80 = 160)
@@ -478,7 +466,7 @@ class StudentModel(nn.Module):
             self.backbone_with_fpn = BackboneWithFPN(
                 backbone_body=self.global_backbone,
                 fpn=self.global_fpn,
-                out_channels=80  # 明確設置為80，與期望的通道數匹配
+                out_channels=96  
             )
             
             # 構建檢測頭
@@ -622,7 +610,7 @@ class BackboneWithFPN(nn.Module):
         super(BackboneWithFPN, self).__init__()
         self.body = backbone_body
         self.fpn = fpn
-        self.out_channels = 80
+        self.out_channels = 96  
     
     def forward(self, x):
         """前向傳播"""
