@@ -318,7 +318,7 @@ class LastLevelP6P7(nn.Module):
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
     
-    def forward(self, x, y):
+    def forward(self, x):
         """前向傳播"""
         p6 = self.p6(x[-1])
         p7 = self.p7(self.relu(p6))
