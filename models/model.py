@@ -734,10 +734,7 @@ class FeaturePyramidNetwork(nn.Module):
         # 初始化橫向連接和輸出層
         self.inner_blocks = nn.ModuleList()
         self.layer_blocks = nn.ModuleList()
-        
-        # 記錄輸入通道以便進行適當的檢查
-        self.in_channels_list = in_channels_list
-        
+
         for in_channels in in_channels_list:
             inner_block = nn.Conv2d(in_channels, out_channels, 1)
             layer_block = nn.Conv2d(out_channels, out_channels, 3, padding=1)
