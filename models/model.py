@@ -317,8 +317,8 @@ class LastLevelP6P7(nn.Module):
             out_channels: 輸出通道數
         """
         super(LastLevelP6P7, self).__init__()
-        # 將p6的輸入通道數更改為與輸入特徵匹配的96
-        self.p6 = nn.Conv2d(96, out_channels, 3, stride=2, padding=1)
+        # 修改 p6 的輸入通道數，確保與實際輸入匹配
+        self.p6 = nn.Conv2d(in_channels, out_channels, 3, stride=2, padding=1)
         self.p7 = nn.Conv2d(out_channels, out_channels, 3, stride=2, padding=1)
         self.relu = nn.ReLU(inplace=True)
         
@@ -420,7 +420,7 @@ class StudentModel(nn.Module):
 
             if student_cfg["neck"]["extra_blocks"] == "lastlevel_p6p7":
                 self.global_fpn_extra_blocks = LastLevelP6P7(
-                    in_channels=96,  # 固定為96，與FPN輸出匹配
+                    in_channels=in_channels_list[-1],  # 使用正確的輸入通道
                     out_channels=global_fpn_channels
                 )
             else:
