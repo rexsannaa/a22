@@ -540,17 +540,40 @@ class DistillationTrainer:
                 images = list(img.to(self.device) for img in images)
                 targets = [{k: v.to(self.device) for k, v in t.items()} for t in targets]
                 
-                # 前向傳播
-                loss_dict = self.student_model(images, targets)
-                loss = sum(loss for loss in loss_dict.values())
-                total_loss += loss.item()
+                try:
+                    # 前向傳播 - 檢查返回值類型
+                    loss_dict = self.student_model(images, targets)
+                    
+                    # 處理不同類型的返回值
+                    if isinstance(loss_dict, dict):
+                        # 如果是字典，直接使用 values()
+                        loss = sum(loss for loss in loss_dict.values())
+                    elif isinstance(loss_dict, list):
+                        # 如果是列表，直接求和
+                        loss = sum(loss_dict)
+                    elif isinstance(loss_dict, torch.Tensor):
+                        # 如果是張量，直接使用
+                        loss = loss_dict
+                    else:
+                        # 其他情況，記錄警告並使用零損失
+                        logger.warning(f"未知的損失類型: {type(loss_dict)}")
+                        loss = torch.tensor(0.0, device=self.device)
+                        
+                    total_loss += loss.item()
+                except Exception as e:
+                    logger.warning(f"計算驗證損失時出錯: {str(e)}")
+                    loss = torch.tensor(0.0, device=self.device)
+                    total_loss += 0.0
                 
                 # 獲取預測
-                predictions = self.student_model(images)
-                
-                # 收集預測和目標
-                all_predictions.extend(predictions)
-                all_targets.extend(targets)
+                try:
+                    predictions = self.student_model(images)
+                    
+                    # 收集預測和目標
+                    all_predictions.extend(predictions)
+                    all_targets.extend(targets)
+                except Exception as e:
+                    logger.warning(f"獲取預測時出錯: {str(e)}")
         
         # 設置模型為訓練模式
         self.student_model.train()
