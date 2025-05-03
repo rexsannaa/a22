@@ -396,7 +396,7 @@ class StudentModel(nn.Module):
                     self.local_attentions = None
                 
                 # FPN通道設置 - 保留為這些設定值
-                global_fpn_channels = student_cfg["dual_branch"]["global_branch"]["fpn_channels"]
+                global_fpn_channels = 80  # 固定為80，與後續層期望的通道數匹配
                 local_fpn_channels = student_cfg["dual_branch"]["local_branch"]["fpn_channels"]
             else:
                 # 單分支結構
@@ -429,6 +429,7 @@ class StudentModel(nn.Module):
             
             # 局部FPN (如果啟用了雙分支)
             if student_cfg["dual_branch"]["enabled"]:
+                local_fpn_channels = 80
                 if student_cfg["neck"]["extra_blocks"] == "lastlevel_p6p7":
                     self.local_fpn_extra_blocks = LastLevelP6P7(
                         backbone_out_channels[-1], 
