@@ -813,7 +813,12 @@ class TeacherModel(nn.Module):
             )
             
             logger.info("教師模型初始化完成")
-    
+            # 直接暴露主體和骨幹網絡，便於特徵提取
+            if hasattr(self.detector, 'backbone'):
+                self.backbone = self.detector.backbone
+                if hasattr(self.backbone, 'body'):
+                    self.body = self.backbone.body
+
     def forward(self, x):
         # 提取主幹特徵
         x = self.body(x)
@@ -906,48 +911,65 @@ class FeaturePyramidNetwork(nn.Module):
         self.out_channels = out_channels  # 添加輸出通道屬性
     
     def forward(self, x):
-        # 檢查並提取特徵
+        """前向傳播"""
+        # 檢查輸入類型
         if isinstance(x, dict):
-            # 轉換字典順序確保正確的特徵順序
-            keys = sorted([k for k in x.keys() if k.isdigit()], key=int)
-            features = [x[k] for k in keys]
-        elif isinstance(x, (list, tuple)):
-            features = list(x)
+            # 如果輸入是字典，提取正確的特徵層並排序
+            x_list = []
+            # 嘗試按數字順序排序鍵（如果鍵是數字字符串）
+            try:
+                sorted_keys = sorted(x.keys(), key=lambda k: int(k) if k.isdigit() else k)
+            except:
+                # 如果排序失敗，使用原始順序
+                sorted_keys = list(x.keys())
+            
+            # 收集特徵
+            for key in sorted_keys:
+                x_list.append(x[key])
+            
+            # 如果沒有足夠的特徵，填充到需要的數量
+            while len(x_list) < len(self.inner_blocks):
+                if len(x_list) > 0:
+                    # 複製並下採樣最後一個特徵
+                    last_feature = x_list[-1]
+                    x_list.append(F.avg_pool2d(last_feature, kernel_size=2, stride=2))
+                else:
+                    # 沒有特徵可用
+                    logger.error("輸入特徵為空")
+                    return OrderedDict()
         else:
-            raise ValueError("輸入必須是特徵字典或特徵列表")
+            # 如果已經是列表或元組
+            x_list = list(x)
         
-        # 確保特徵數量與處理層數一致
-        if len(features) != len(self.inner_blocks):
-            logger.warning(f"特徵數量 ({len(features)}) 與處理層數 ({len(self.inner_blocks)}) 不匹配")
-            # 裁剪或擴展特徵列表
-            if len(features) > len(self.inner_blocks):
-                features = features[:len(self.inner_blocks)]
+        # 確保特徵數量匹配
+        if len(x_list) != len(self.in_channels_list):
+            logger.warning(f"輸入特徵數量 ({len(x_list)}) 與內部塊數量 ({len(self.inner_blocks)}) 不匹配")
+            
+            # 調整特徵數量
+            if len(x_list) > len(self.in_channels_list):
+                # 如果特徵太多，只使用前面的幾個
+                x_list = x_list[:len(self.in_channels_list)]
             else:
-                # 複製最後一個特徵以填充
-                last_feature = features[-1]
-                while len(features) < len(self.inner_blocks):
-                    downsampled = F.avg_pool2d(last_feature, kernel_size=2, stride=2)
-                    features.append(downsampled)
-                    last_feature = downsampled
+                # 如果特徵太少，複製最後一個特徵
+                while len(x_list) < len(self.in_channels_list):
+                    if len(x_list) > 0:
+                        x_list.append(F.avg_pool2d(x_list[-1], kernel_size=2, stride=2))
+                    else:
+                        # 創建零張量填充
+                        shape = list(x.values())[0].shape if isinstance(x, dict) else x[0].shape
+                        x_list.append(torch.zeros_like(shape))
         
-        # 從最深層開始處理特徵
-        idx = len(self.inner_blocks) - 1
-        inner_lateral = self.inner_blocks[idx](features[idx])
-        results = [self.layer_blocks[idx](inner_lateral)]
+        # FPN 特徵金字塔處理 - 從最深層開始
+        last_inner = self.inner_blocks[-1](x_list[-1])
+        results = [self.layer_blocks[-1](last_inner)]
         
         # 從上到下處理其他特徵
-        for i in range(len(self.inner_blocks)-2, -1, -1):
-            # 檢查特徵尺寸並調整
-            if i >= len(features):
-                logger.error(f"特徵索引 {i} 超出範圍 {len(features)}")
-                continue
-                
-            feat = features[i]
-            inner_lateral = self.inner_blocks[i](feat)
+        for idx in range(len(self.inner_blocks) - 2, -1, -1):
+            inner_lateral = self.inner_blocks[idx](x_list[idx])
             feat_shape = inner_lateral.shape[-2:]
-            inner_top_down = F.interpolate(results[0], size=feat_shape, mode="nearest")
-            inner_lateral = inner_lateral + inner_top_down
-            results.insert(0, self.layer_blocks[i](inner_lateral))
+            inner_top_down = F.interpolate(last_inner, size=feat_shape, mode="nearest")
+            last_inner = inner_lateral + inner_top_down
+            results.insert(0, self.layer_blocks[idx](last_inner))
         
         # 處理額外層
         if self.extra_blocks is not None:
