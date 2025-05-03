@@ -494,9 +494,31 @@ class StudentModel(nn.Module):
         # 應用FPN
         global_fpn_features = self.global_fpn(global_features[-3:])  # 使用最後三層特徵
         
+        # 關鍵修改: 確保特徵通道數匹配，需要添加顯式的通道轉換步驟
+        # 如果全局特徵的通道數是96，而我們期望的是80，添加一個1x1卷積來調整通道數
+        adjusted_global_features = []
+        for feature in global_fpn_features:
+            if feature.shape[1] != 80:  # 如果不是期望的80通道
+                # 使用1x1卷積調整通道數
+                channel_adapter = nn.Conv2d(feature.shape[1], 80, kernel_size=1, bias=False).to(feature.device)
+                feature = channel_adapter(feature)
+            adjusted_global_features.append(feature)
+        
+        global_fpn_features = adjusted_global_features  # 更新全局特徵
+        
         if local_features is not None and self.local_fpn is not None:
             local_fpn_features = self.local_fpn(local_features[-3:])
             
+            # 同樣為局部特徵添加通道調整
+            adjusted_local_features = []
+            for feature in local_fpn_features:
+                if feature.shape[1] != 80:  # 如果不是期望的80通道
+                    channel_adapter = nn.Conv2d(feature.shape[1], 80, kernel_size=1, bias=False).to(feature.device)
+                    feature = channel_adapter(feature)
+                adjusted_local_features.append(feature)
+            
+            local_fpn_features = adjusted_local_features  # 更新局部特徵
+                
             # 融合操作
             fused_features = []
             for gf, lf in zip(global_fpn_features, local_fpn_features):
