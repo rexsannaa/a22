@@ -368,39 +368,56 @@ class DistillationTrainer:
             batched_images = images
         
         # 對於教師模型 (ResNet特徵提取)
-        if is_teacher and hasattr(model, 'backbone') and hasattr(model.backbone, 'body'):
+        if is_teacher and hasattr(model, 'detector') and hasattr(model.detector, 'backbone'):
             with torch.no_grad():
-                # 提取骨幹網絡的特徵 - 使用原始方式
                 try:
-                    # 直接使用 ResNet 的各層提取特徵，避免使用 IntermediateLayerGetter
-                    x = batched_images
-                    # ResNet 結構: conv1, bn1, relu, maxpool, layer1, layer2, layer3, layer4
-                    x = model.backbone.body.conv1(x)
-                    x = model.backbone.body.bn1(x)
-                    x = model.backbone.body.relu(x)
-                    x = model.backbone.body.maxpool(x)
+                    # 使用特定於教師模型的方法提取特徵
+                    if hasattr(model.detector.backbone, 'body') and isinstance(model.detector.backbone.body, nn.Module):
+                        backbone = model.detector.backbone.body
+                        
+                        # 依序手動提取特徵
+                        x = batched_images
+                        if hasattr(backbone, 'conv1'):
+                            x = backbone.conv1(x)
+                            x = backbone.bn1(x)
+                            x = backbone.relu(x)
+                            x = backbone.maxpool(x)
+                        
+                            # 按順序通過層
+                            if hasattr(backbone, 'layer1'):
+                                layer1 = backbone.layer1(x)
+                                features['layer1'] = layer1
+                                
+                                if hasattr(backbone, 'layer2'):
+                                    layer2 = backbone.layer2(layer1)
+                                    features['layer2'] = layer2
+                                    
+                                    if hasattr(backbone, 'layer3'):
+                                        layer3 = backbone.layer3(layer2)
+                                        features['layer3'] = layer3
+                                        
+                                        if hasattr(backbone, 'layer4'):
+                                            layer4 = backbone.layer4(layer3)
+                                            features['layer4'] = layer4
+                    else:
+                        # 使用替代方法，直接通過FPN獲取特徵
+                        features = model.detector.backbone(batched_images)
+                        # 轉換鍵名
+                        if isinstance(features, dict) or isinstance(features, OrderedDict):
+                            renamed_features = {}
+                            for i, (k, v) in enumerate(features.items()):
+                                renamed_features[f'layer{i+1}'] = v
+                            features = renamed_features
                     
-                    # 依次通過各層
-                    layer1 = model.backbone.body.layer1(x)
-                    layer2 = model.backbone.body.layer2(layer1)
-                    layer3 = model.backbone.body.layer3(layer2)
-                    layer4 = model.backbone.body.layer4(layer3)
-                    
-                    # 映射層名稱
-                    features = {
-                        'layer1': layer1,
-                        'layer2': layer2,
-                        'layer3': layer3,
-                        'layer4': layer4
-                    }
                 except Exception as e:
-                    # 如果直接提取失敗，使用替代方法
+                    # 如果特徵提取失敗，使用空值
                     logger.warning(f"直接特徵提取失敗: {str(e)}，使用零張量替代")
                     # 使用零張量作為占位符
                     features = {
-                        'layer2': torch.zeros((batched_images.shape[0], 512, batched_images.shape[2]//4, batched_images.shape[3]//4), device=batched_images.device),
-                        'layer3': torch.zeros((batched_images.shape[0], 1024, batched_images.shape[2]//8, batched_images.shape[3]//8), device=batched_images.device),
-                        'layer4': torch.zeros((batched_images.shape[0], 2048, batched_images.shape[2]//16, batched_images.shape[3]//16), device=batched_images.device)
+                        'layer1': torch.zeros((batched_images.shape[0], 256, batched_images.shape[2]//4, batched_images.shape[3]//4), device=batched_images.device),
+                        'layer2': torch.zeros((batched_images.shape[0], 512, batched_images.shape[2]//8, batched_images.shape[3]//8), device=batched_images.device),
+                        'layer3': torch.zeros((batched_images.shape[0], 1024, batched_images.shape[2]//16, batched_images.shape[3]//16), device=batched_images.device),
+                        'layer4': torch.zeros((batched_images.shape[0], 2048, batched_images.shape[2]//32, batched_images.shape[3]//32), device=batched_images.device)
                     }
         
         # 對於學生模型 (MobileNet特徵提取)
@@ -408,6 +425,14 @@ class DistillationTrainer:
             # 提取學生模型特徵
             x = batched_images
             for name, module in model.backbone.features._modules.items():
+                x = module(x)
+                feature_name = f"features.{name}"
+                if feature_name in ['features.3', 'features.6', 'features.9', 'features.12', 'features.15']:
+                    features[feature_name] = x
+        elif hasattr(model, 'detector') and hasattr(model.detector, 'backbone') and hasattr(model.detector.backbone, 'features'):
+            # 針對學生模型的另一種結構
+            x = batched_images
+            for name, module in model.detector.backbone.features._modules.items():
                 x = module(x)
                 feature_name = f"features.{name}"
                 if feature_name in ['features.3', 'features.6', 'features.9', 'features.12', 'features.15']:
