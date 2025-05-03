@@ -375,7 +375,7 @@ class DistillationTrainer:
                     if hasattr(model.detector.backbone, 'body') and isinstance(model.detector.backbone.body, nn.Module):
                         backbone = model.detector.backbone.body
                         
-                        # 依序手動提取特徵
+                        # 直接處理張量而不是列表
                         x = batched_images
                         if hasattr(backbone, 'conv1'):
                             x = backbone.conv1(x)
@@ -400,7 +400,8 @@ class DistillationTrainer:
                                             layer4 = backbone.layer4(layer3)
                                             features['layer4'] = layer4
                     else:
-                        # 使用替代方法，直接通過FPN獲取特徵
+                        # 使用替代方法，直接通過模型獲取特徵
+                        # 確保輸入是單個張量而不是列表
                         features = model.detector.backbone(batched_images)
                         # 轉換鍵名
                         if isinstance(features, dict) or isinstance(features, OrderedDict):
@@ -410,7 +411,7 @@ class DistillationTrainer:
                             features = renamed_features
                     
                 except Exception as e:
-                    # 如果特徵提取失敗，使用空值
+                    # 如果特徵提取失敗，使用零張量
                     logger.warning(f"直接特徵提取失敗: {str(e)}，使用零張量替代")
                     # 使用零張量作為占位符
                     features = {
@@ -473,7 +474,11 @@ class DistillationTrainer:
                 # 嘗試提取教師特徵
                 teacher_features = self._extract_features(self.teacher_model, images, is_teacher=True)
                 # 嘗試獲取教師輸出
-                teacher_outputs = self.teacher_model(images)
+                # 這裡直接傳單張圖像，避免列表問題
+                batched_images = torch.stack(images)
+                if isinstance(images, list):
+                    batched_images = torch.stack(images)
+                teacher_outputs = self.teacher_model(batched_images)
             except Exception as e:
                 logger.warning(f"教師模型處理失敗: {str(e)}，使用零填充替代")
                 # 使用空字典作為替代

@@ -714,7 +714,7 @@ class TeacherModel(nn.Module):
             backbone_model = IntermediateLayerGetter(backbone, return_layers)
 
             # 特徵金字塔網絡 - 修改這裡的通道配置
-            in_channels_list = [512, 1024, 2048]  # 明確指定 ResNet50 層 2、3、4 的通道數
+            in_channels_list = [256, 512, 1024, 2048]  # ResNet50 各層通道數
             out_channels = teacher_cfg["fpn"]["out_channels"]
 
             # 確定額外的塊類型
@@ -725,7 +725,7 @@ class TeacherModel(nn.Module):
 
             # 創建 FPN
             fpn_module = FeaturePyramidNetwork(
-                in_channels_list=in_channels_list,
+                in_channels_list=in_channels_list[-3:],  # 使用後三層
                 out_channels=out_channels,
                 extra_blocks=extra_blocks
             )
@@ -755,6 +755,8 @@ class TeacherModel(nn.Module):
 
             # 創建自定義骨幹網絡
             self.backbone = CustomBackboneWrapper(backbone_model, fpn_module)
+            # 直接保存 FPN 引用以便後續使用
+            self.fpn = fpn_module
             
             # 構建FasterRCNN
             # 定義錨點生成器
@@ -819,32 +821,17 @@ class TeacherModel(nn.Module):
                 if hasattr(self.backbone, 'body'):
                     self.body = self.backbone.body
 
-    def forward(self, x):
-        # 提取主幹特徵
-        x = self.body(x)
+    def forward(self, x, targets=None):
+        """前向傳播"""
+        # 確保輸入是張量，而不是列表
+        if isinstance(x, list):
+            x = torch.stack(x)  # 將列表中的所有張量堆疊成一個批次
         
-        # 確保至少有3個特徵層
-        if len(x) < 3:
-            logger.warning(f"主幹網絡只提供了 {len(x)} 個特徵層，需要至少3個")
-            
-            # 如果缺少特徵層，複製並調整現有層
-            keys = list(x.keys())
-            if len(keys) > 0:
-                last_feature = x[keys[-1]]
-                for i in range(len(keys), 3):
-                    new_key = str(i)
-                    # 下採樣上一層特徵
-                    x[new_key] = F.max_pool2d(last_feature, kernel_size=2, stride=2)
-                    last_feature = x[new_key]
-        
-        # 指定需要的特徵層
-        selected_features = {}
-        for i, key in enumerate(sorted(x.keys(), key=lambda k: int(k) if k.isdigit() else float('inf'))[:3]):
-            selected_features[str(i+1)] = x[key]
-        
-        # 應用 FPN
-        x = self.fpn(selected_features)
-        return x
+        # 調用檢測器進行前向傳播
+        if targets is not None:
+            return self.detector(x, targets)
+        else:
+            return self.detector(x)
 
 
 class BackboneWithBatchNorm(nn.Module):
