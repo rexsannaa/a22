@@ -203,6 +203,66 @@ class LightweightFPN(nn.Module):
         
         # 額外層
         self.extra_blocks = extra_blocks
+        
+        # 添加通道適配器，確保輸出通道數與期望相符
+        self.channel_adapters = nn.ModuleList()
+        for _ in range(len(in_channels_list) + (2 if extra_blocks is not None and isinstance(extra_blocks, LastLevelP6P7) else 0)):
+            self.channel_adapters.append(
+                nn.Conv2d(out_channels, 80, kernel_size=1, bias=False)
+            )
+    
+    def _make_layer_block(self, channels, use_depthwise=True):
+        """創建層間連接塊"""
+        if use_depthwise:
+            # 使用深度可分離卷積
+            return nn.Sequential(
+                # 深度卷積
+                nn.Conv2d(channels, channels, 3, padding=1, groups=channels, bias=False),
+                nn.BatchNorm2d(channels),
+                nn.ReLU(inplace=True),
+                # 點卷積
+                nn.Conv2d(channels, channels, 1, bias=False),
+                nn.BatchNorm2d(channels),
+                nn.ReLU(inplace=True)
+            )
+        else:
+            # 使用標準卷積
+            return nn.Sequential(
+                nn.Conv2d(channels, channels, 3, padding=1, bias=False),
+                nn.BatchNorm2d(channels),
+                nn.ReLU(inplace=True)
+            )
+    
+    def forward(self, x):
+        """前向傳播"""
+        # 從底到頂處理特徵
+        last_inner = self.inner_blocks[-1](x[-1])
+        results = [self.layer_blocks[-1](last_inner)]
+        
+        # 從上到下處理其他特徵
+        for idx in range(len(x) - 2, -1, -1):
+            inner_lateral = self.inner_blocks[idx](x[idx])
+            feat_shape = inner_lateral.shape[-2:]
+            inner_top_down = F.interpolate(last_inner, size=feat_shape, mode="nearest")
+            last_inner = inner_lateral + inner_top_down
+            results.insert(0, self.layer_blocks[idx](last_inner))
+        
+        # 處理額外層
+        if self.extra_blocks is not None:
+            results.extend(self.extra_blocks(x, results))
+        
+        # 應用通道適配器，確保所有特徵都是80通道
+        adapted_results = []
+        for i, result in enumerate(results):
+            # 確保通道數適配器索引不超出範圍
+            if i < len(self.channel_adapters):
+                adapted_results.append(self.channel_adapters[i](result))
+            else:
+                # 如果超出範圍，創建一個臨時適配器
+                adapter = nn.Conv2d(result.shape[1], 80, kernel_size=1, bias=False).to(result.device)
+                adapted_results.append(adapter(result))
+        
+        return adapted_results
     
     def _make_layer_block(self, channels, use_depthwise=True):
         """創建層間連接塊"""
@@ -561,8 +621,7 @@ class BackboneWithFPN(nn.Module):
         super(BackboneWithFPN, self).__init__()
         self.body = backbone_body
         self.fpn = fpn
-        # 確保這裡的out_channels與模型內部使用的通道數匹配
-        self.out_channels = out_channels
+        self.out_channels = 80
     
     def forward(self, x):
         """前向傳播"""
