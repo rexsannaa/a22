@@ -451,9 +451,9 @@ class StudentModel(nn.Module):
             if student_cfg["dual_branch"]["enabled"]:
                 local_fpn_channels = 80
                 if student_cfg["neck"]["extra_blocks"] == "lastlevel_p6p7":
-                    self.global_fpn_extra_blocks = LastLevelP6P7(
+                    self.local_fpn_extra_blocks = LastLevelP6P7(
                         80,  # 直接使用固定的 80 作為輸入通道
-                        global_fpn_channels  # 這裡的值是 80
+                        local_fpn_channels  # 使用局部 FPN 通道數
                     )
                 else:
                     self.local_fpn_extra_blocks = None
@@ -475,13 +475,13 @@ class StudentModel(nn.Module):
                 
                 # 輸入和輸出通道數需要匹配 
                 input_channels = global_fpn_channels + local_fpn_channels  # 來自兩個分支的總輸入通道
-                
+
                 # 確保輸出通道數與backbone特徵通道數匹配 - 關鍵修正
-                output_channels = 96  # 修正為80個通道，與特徵提取適配層期望的通道數匹配
+                output_channels = 96  # 使用96通道以匹配模型期望的輸入通道數
                                 
                 self.fusion_layer = nn.Conv2d(
                     input_channels,  # 輸入通道 (80 + 80 = 160)
-                    output_channels,  # 輸出通道為80
+                    output_channels,  # 輸出通道為96
                     kernel_size=1,
                     bias=False
                 )
@@ -618,6 +618,15 @@ class StudentModel(nn.Module):
             return fused_features
         else:
             return global_fpn_features
+        # 確保所有特徵的通道數為96
+        if global_fpn_features[0].shape[1] != 96:
+            adjusted_features = []
+            for feature in global_fpn_features:
+                # 使用1x1卷積調整通道數
+                channel_adapter = nn.Conv2d(feature.shape[1], 96, kernel_size=1, bias=False).to(feature.device)
+                adjusted_feature = channel_adapter(feature)
+                adjusted_features.append(adjusted_feature)
+            return adjusted_features
     
     def forward(self, x, targets=None):
         """前向傳播"""
@@ -839,6 +848,8 @@ class FeaturePyramidNetwork(nn.Module):
             extra_blocks: 額外的輸出層
         """
         super(FeaturePyramidNetwork, self).__init__()
+        # 保存输入通道列表
+        self.in_channels_list = in_channels_list
         
         # 初始化橫向連接和輸出層
         self.inner_blocks = nn.ModuleList()
