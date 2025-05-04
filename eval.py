@@ -263,7 +263,7 @@ def get_dataloader(config):
             return torch.stack(images), targets
         
         # 從配置中讀取參數
-        root_dir = config.get('dataset_path', 'C:/Users/a/Desktop/研討會/PCB_DATASET')
+        root_dir = config.get('dataset_path', 'C:/Users/a/Desktop/conference/PCB_DATASET')
         batch_size = config.get('batch_size', 16)
         img_size = config.get('img_size', 640)
         num_workers = config.get('num_workers', 4)

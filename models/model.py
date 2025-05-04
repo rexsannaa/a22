@@ -130,14 +130,18 @@ class TeacherModel(nn.Module):
         """
         super(TeacherModel, self).__init__()
         
-        # 載入YOLO8-L
+        # 載入YOLO8-L (禁止自動下載數據集)
+        import os
+        os.environ['YOLO_AUTOINSTALL'] = '0'
+        os.environ['ULTRALYTICS_DATASET_DOWNLOAD'] = '0'
+        
         if pretrained:
-            self.model = YOLO('yolov8l.pt')
+            self.model = YOLO('yolov8l.pt', task='detect')
             # 調整模型以匹配我們的類別數量
             self.model.model.nc = num_classes
             logger.info("已載入預訓練的YOLO8-L模型")
         else:
-            self.model = YOLO('yolov8l.yaml')
+            self.model = YOLO('yolov8l.yaml', task='detect')
             self.model.model.nc = num_classes
             logger.info("已初始化YOLO8-L模型")
             
@@ -214,14 +218,18 @@ class StudentModel(nn.Module):
         """
         super(StudentModel, self).__init__()
         
-        # 載入YOLO8-S
+        # 載入YOLO8-S (禁止自動下載數據集)
+        import os
+        os.environ['YOLO_AUTOINSTALL'] = '0'
+        os.environ['ULTRALYTICS_DATASET_DOWNLOAD'] = '0'
+        
         if pretrained:
-            self.model = YOLO('yolov8s.pt')
+            self.model = YOLO('yolov8s.pt', task='detect')
             # 調整模型以匹配我們的類別數量
             self.model.model.nc = num_classes
             logger.info("已載入預訓練的YOLO8-S模型")
         else:
-            self.model = YOLO('yolov8s.yaml')
+            self.model = YOLO('yolov8s.yaml', task='detect')
             self.model.model.nc = num_classes
             logger.info("已初始化YOLO8-S模型")
             
@@ -305,7 +313,20 @@ class StudentModel(nn.Module):
             if detect_index >= 0:
                 # 獲取原始檢測頭
                 original_detect = self.yolo_model.model[detect_index]
-                detect_in_channels = original_detect.in_channels
+                
+                # 估算輸入通道數 (根據YOLO的一般結構)
+                # 由於無法直接訪問 in_channels，我們從檢測頭的卷積層推斷
+                try:
+                    # 嘗試從 cv2 推斷通道數
+                    detect_in_channels = [
+                        original_detect.cv2[0].conv.in_channels,
+                        original_detect.cv2[1].conv.in_channels,
+                        original_detect.cv2[2].conv.in_channels
+                    ]
+                except (AttributeError, IndexError):
+                    # 如果無法獲取，使用默認值
+                    detect_in_channels = [128, 256, 512]
+                    logger.warning(f"無法推斷檢測頭通道數，使用默認值: {detect_in_channels}")
                 
                 # 替換檢測頭為自定義版本
                 self.yolo_model.model[detect_index] = EnhancedDetect(
@@ -378,16 +399,20 @@ class EnhancedDetect(Detect):
             nc: 類別數量
             in_channels: 輸入通道數列表
         """
-        super(EnhancedDetect, self).__init__(nc, in_channels)
+        super(EnhancedDetect, self).__init__(nc=nc, ch=in_channels)  # 使用正確的參數名
+        
+        # 獲取輸入通道數
+        ch = self.cv2[0].conv.in_channels  # 從原始層提取通道數
+        self.in_channels = [ch, ch*2, ch*4] if in_channels is None else in_channels
         
         # 添加額外處理層（權重共享以減少參數）
         self.enhancers = nn.ModuleList([
             nn.Sequential(
-                nn.Conv2d(in_channels[i], in_channels[i], 
-                         kernel_size=3, padding=1, groups=in_channels[i]),
-                nn.BatchNorm2d(in_channels[i]),
+                nn.Conv2d(self.in_channels[i], self.in_channels[i], 
+                        kernel_size=3, padding=1, groups=self.in_channels[i]),
+                nn.BatchNorm2d(self.in_channels[i]),
                 nn.SiLU()
-            ) for i in range(len(in_channels))
+            ) for i in range(len(self.in_channels))
         ])
         
     def forward(self, x):

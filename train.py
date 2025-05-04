@@ -12,6 +12,9 @@ train.py - PCB缺陷檢測訓練主程式
 """
 
 import os
+# 設置環境變數防止下載COCO數據集
+os.environ['YOLO_AUTOINSTALL'] = '0'
+os.environ['ULTRALYTICS_DATASET_DOWNLOAD'] = '0'
 import argparse
 import torch
 import yaml
@@ -88,7 +91,7 @@ def train(config, teacher_model=None, student_model=None, use_distillation=True)
     if student_model is None:
         logger.info("初始化學生模型...")
         student_model = get_student_model(config)
-    
+
     if use_distillation and teacher_model is None:
         logger.info("初始化教師模型...")
         teacher_model = get_teacher_model(config)
