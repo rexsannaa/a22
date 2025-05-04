@@ -11,7 +11,7 @@ project:
 
 # 資料集配置
 dataset:
-  path: "C:/Users/a/Desktop/研討會/PCB_DATASET"
+  path: "C:/Users/a/Desktop/conference/PCB_DATASET"
   img_size: 640
   batch_size: 16
   num_workers: 4
@@ -84,6 +84,6 @@ visualization:
     missing_hole: [0, 0, 255]     # 紅色
     mouse_bite: [0, 255, 0]       # 綠色
     spur: [255, 0, 0]             # 藍色
-    spurious_copper: [0, 255, 255]# 黃色
+    spurious_copper: [0, 255, 255] # 黃色
     pin_hole: [255, 0, 255]       # 紫色
     open_circuit: [255, 255, 0]   # 青色

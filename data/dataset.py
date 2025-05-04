@@ -64,6 +64,13 @@ class PCBDataset(Dataset):
             mosaic_prob: 使用Mosaic增強的機率
         """
         self.root_dir = root_dir
+        
+        # 檢查根目錄是否存在
+        if not os.path.exists(root_dir):
+            logger.error(f"資料集根目錄不存在: {root_dir}")
+            logger.info(f"當前工作目錄: {os.getcwd()}")
+            raise FileNotFoundError(f"資料集根目錄不存在: {root_dir}")
+            
         self.img_size = img_size
         self.mode = mode
         self.imgs_path = os.path.join(root_dir, 'images')
@@ -71,30 +78,88 @@ class PCBDataset(Dataset):
         self.use_augmentation = use_augmentation and mode == 'train'
         self.mosaic_prob = mosaic_prob if self.use_augmentation else 0
         
+        # 檢查必要的子目錄是否存在
+        if not os.path.exists(self.imgs_path):
+            logger.error(f"圖像目錄不存在: {self.imgs_path}")
+            raise FileNotFoundError(f"圖像目錄不存在: {self.imgs_path}")
+            
+        if not os.path.exists(self.annotations_path):
+            logger.error(f"標註目錄不存在: {self.annotations_path}")
+            raise FileNotFoundError(f"標註目錄不存在: {self.annotations_path}")
+        
         # 讀取資料路徑
         self.image_files = []
         self.annotation_files = []
         
         # 從每個缺陷類型的資料夾載入圖片和標註
         for defect_type in DEFECT_CLASSES.keys():
-            img_dir = os.path.join(self.imgs_path, defect_type)
-            ann_dir = os.path.join(self.annotations_path, defect_type)
+            # 嘗試不同的可能目錄名稱格式
+            possible_img_dirs = [
+                os.path.join(self.imgs_path, defect_type),  # 原始名稱
+                os.path.join(self.imgs_path, defect_type.replace('_', ' ')),  # 空格替換下劃線
+                os.path.join(self.imgs_path, defect_type.title().replace('_', '')),  # 駝峰命名
+                os.path.join(self.imgs_path, defect_type.upper()),  # 全大寫
+                os.path.join(self.imgs_path, defect_type.replace('_', '-'))  # 破折號替換下劃線
+            ]
             
-            if not os.path.exists(img_dir) or not os.path.exists(ann_dir):
-                logger.warning(f"找不到路徑 {img_dir} 或 {ann_dir}")
-                continue
-                
-            for filename in os.listdir(img_dir):
-                if filename.endswith('.jpg'):
-                    img_path = os.path.join(img_dir, filename)
-                    ann_path = os.path.join(ann_dir, filename.replace('.jpg', '.xml'))
+            possible_ann_dirs = [
+                os.path.join(self.annotations_path, defect_type),  # 原始名稱
+                os.path.join(self.annotations_path, defect_type.replace('_', ' ')),  # 空格替換下劃線
+                os.path.join(self.annotations_path, defect_type.title().replace('_', '')),  # 駝峰命名
+                os.path.join(self.annotations_path, defect_type.upper()),  # 全大寫
+                os.path.join(self.annotations_path, defect_type.replace('_', '-'))  # 破折號替換下劃線
+            ]
+            
+            # 檢查所有可能的目錄組合
+            found_valid_dir = False
+            for img_dir in possible_img_dirs:
+                if not os.path.exists(img_dir):
+                    continue
                     
-                    if os.path.exists(ann_path):
-                        self.image_files.append(img_path)
-                        self.annotation_files.append(ann_path)
+                for ann_dir in possible_ann_dirs:
+                    if not os.path.exists(ann_dir):
+                        continue
+                        
+                    # 找到有效的目錄組合
+                    found_valid_dir = True
+                    logger.info(f"找到缺陷類型目錄: {img_dir} 和 {ann_dir}")
+                    
+                    for filename in os.listdir(img_dir):
+                        if filename.endswith('.jpg'):
+                            img_path = os.path.join(img_dir, filename)
+                            ann_path = os.path.join(ann_dir, filename.replace('.jpg', '.xml'))
+                            
+                            if os.path.exists(ann_path):
+                                self.image_files.append(img_path)
+                                self.annotation_files.append(ann_path)
+                                
+                    break  # 找到有效組合後跳出內層循環
+                    
+                if found_valid_dir:
+                    break  # 找到有效組合後跳出外層循環
+                    
+            if not found_valid_dir:
+                logger.warning(f"找不到缺陷類型 {defect_type} 的有效目錄")
+        
+        # 如果沒有找到任何檔案，嘗試直接搜尋整個目錄
+        if len(self.image_files) == 0:
+            logger.warning("未在子目錄中找到任何圖像，嘗試在主目錄中搜尋...")
+            
+            # 檢查主圖像目錄
+            if os.path.exists(self.imgs_path):
+                for filename in os.listdir(self.imgs_path):
+                    if filename.endswith('.jpg'):
+                        img_path = os.path.join(self.imgs_path, filename)
+                        ann_path = os.path.join(self.annotations_path, filename.replace('.jpg', '.xml'))
+                        
+                        if os.path.exists(ann_path):
+                            self.image_files.append(img_path)
+                            self.annotation_files.append(ann_path)
+                            
+            logger.info(f"在主目錄中找到 {len(self.image_files)} 張圖像")
         
         # 分割訓練和驗證資料集
-        if mode != 'test':
+        if mode != 'test' and len(self.image_files) > 0:
             indices = list(range(len(self.image_files)))
             random.seed(42)  # 確保可重複性
             random.shuffle(indices)
@@ -151,6 +216,10 @@ class PCBDataset(Dataset):
         # 讀取圖片
         img_path = self.image_files[idx]
         img = cv2.imread(img_path)
+        if img is None:
+            logger.warning(f"無法讀取圖像: {img_path}，使用空白圖像替代")
+            img = np.zeros((self.img_size, self.img_size, 3), dtype=np.uint8)
+            
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
         # 讀取標註
@@ -204,6 +273,10 @@ class PCBDataset(Dataset):
             ann_path = self.annotation_files[idx]
             
             img = cv2.imread(img_path)
+            if img is None:
+                logger.warning(f"無法讀取圖像: {img_path}，使用空白圖像替代")
+                img = np.zeros((self.img_size, self.img_size, 3), dtype=np.uint8)
+                
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             boxes, labels = self._parse_annotation(ann_path)
             
@@ -271,40 +344,55 @@ class PCBDataset(Dataset):
     
     def _parse_annotation(self, ann_path):
         """解析XML標註檔"""
-        tree = ET.parse(ann_path)
-        root = tree.getroot()
-        
-        # 獲取圖片尺寸
-        size = root.find('size')
-        img_width = int(size.find('width').text)
-        img_height = int(size.find('height').text)
-        
-        boxes = []
-        labels = []
-        
-        # 遍歷所有物體標註
-        for obj in root.findall('object'):
-            name = obj.find('name').text
-            if name not in DEFECT_CLASSES:
-                continue
+        if not os.path.exists(ann_path):
+            logger.warning(f"標註檔不存在: {ann_path}")
+            return [], []
+            
+        try:
+            tree = ET.parse(ann_path)
+            root = tree.getroot()
+            
+            # 獲取圖片尺寸
+            size = root.find('size')
+            if size is None:
+                logger.warning(f"標註檔缺少尺寸資訊: {ann_path}")
+                return [], []
                 
-            label = DEFECT_CLASSES[name]
+            img_width = int(size.find('width').text)
+            img_height = int(size.find('height').text)
             
-            # 獲取邊界框坐標
-            bbox = obj.find('bndbox')
-            xmin = float(bbox.find('xmin').text) / img_width
-            ymin = float(bbox.find('ymin').text) / img_height
-            xmax = float(bbox.find('xmax').text) / img_width
-            ymax = float(bbox.find('ymax').text) / img_height
+            boxes = []
+            labels = []
             
-            # 確保邊界框坐標有效
-            if xmin >= xmax or ymin >= ymax:
-                continue
+            # 遍歷所有物體標註
+            for obj in root.findall('object'):
+                name = obj.find('name').text
+                if name not in DEFECT_CLASSES:
+                    continue
+                    
+                label = DEFECT_CLASSES[name]
                 
-            boxes.append([xmin, ymin, xmax, ymax])
-            labels.append(label)
-            
-        return boxes, labels
+                # 獲取邊界框坐標
+                bbox = obj.find('bndbox')
+                if bbox is None:
+                    continue
+                    
+                xmin = float(bbox.find('xmin').text) / img_width
+                ymin = float(bbox.find('ymin').text) / img_height
+                xmax = float(bbox.find('xmax').text) / img_width
+                ymax = float(bbox.find('ymax').text) / img_height
+                
+                # 確保邊界框坐標有效
+                if xmin >= xmax or ymin >= ymax:
+                    continue
+                    
+                boxes.append([xmin, ymin, xmax, ymax])
+                labels.append(label)
+                
+            return boxes, labels
+        except Exception as e:
+            logger.error(f"解析標註檔出錯: {ann_path}, 錯誤: {e}")
+            return [], []
     
     def _get_default_transforms(self):
         """獲取默認的圖像轉換"""
@@ -337,59 +425,72 @@ def get_dataloader(config):
         val_loader: 驗證資料載入器
     """
     # 從配置中讀取參數
-    if 'dataset' in config and 'path' in config['dataset']:
-        root_dir = config['dataset']['path']
-    else:
-        root_dir = config.get('dataset_path', 'C:/Users/a/Desktop/研討會/PCB_DATASET')
+    root_dir = config.get('dataset', {}).get('path', config.get('dataset_path', 'C:/Users/a/Desktop/conference/PCB_DATASET'))
+    batch_size = config.get('dataset', {}).get('batch_size', config.get('batch_size', 16))
+    img_size = config.get('dataset', {}).get('img_size', config.get('img_size', 640))
+    num_workers = config.get('dataset', {}).get('num_workers', config.get('num_workers', 4))
     
-    # 確認路徑存在
+    # 檢查資料集根目錄是否存在
     if not os.path.exists(root_dir):
         logger.error(f"資料集根目錄不存在: {root_dir}")
         logger.info(f"當前工作目錄: {os.getcwd()}")
         raise FileNotFoundError(f"資料集根目錄不存在: {root_dir}")
+    
+    try:
+        # 建立資料集
+        train_dataset = PCBDataset(
+            root_dir=root_dir,
+            mode='train',
+            img_size=img_size,
+            use_augmentation=True
+        )
         
-    logger.info(f"使用資料集路徑: {root_dir}")
-    batch_size = config.get('batch_size', 16)
-    img_size = config.get('img_size', 640)
-    num_workers = config.get('num_workers', 4)
-    
-    # 建立資料集
-    train_dataset = PCBDataset(
-        root_dir=root_dir,
-        mode='train',
-        img_size=img_size,
-        use_augmentation=True
-    )
-    
-    val_dataset = PCBDataset(
-        root_dir=root_dir,
-        mode='val',
-        img_size=img_size,
-        use_augmentation=False
-    )
-    
-    # 建立資料載入器
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        collate_fn=collate_fn,
-        pin_memory=True
-    )
-    
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        collate_fn=collate_fn,
-        pin_memory=True
-    )
-    
-    logger.info(f"已建立訓練資料載入器 ({len(train_dataset)} 樣本) 和驗證資料載入器 ({len(val_dataset)} 樣本)")
-    
-    return train_loader, val_loader
+        val_dataset = PCBDataset(
+            root_dir=root_dir,
+            mode='val',
+            img_size=img_size,
+            use_augmentation=False
+        )
+        
+        # 檢查資料集大小
+        if len(train_dataset) == 0:
+            logger.error(f"訓練資料集為空，請檢查資料集路徑與結構: {root_dir}")
+            raise ValueError("訓練資料集為空")
+            
+        if len(val_dataset) == 0:
+            logger.warning(f"驗證資料集為空，將使用訓練資料集的子集進行驗證")
+            # 使用訓練資料集的一部分作為驗證集
+            dataset_size = len(train_dataset)
+            train_size = int(dataset_size * 0.8)
+            val_size = dataset_size - train_size
+            train_dataset, val_dataset = torch.utils.data.random_split(train_dataset, [train_size, val_size])
+        
+        # 建立資料載入器
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            collate_fn=collate_fn,
+            pin_memory=True
+        )
+        
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            collate_fn=collate_fn,
+            pin_memory=True
+        )
+        
+        logger.info(f"已建立訓練資料載入器 ({len(train_dataset)} 樣本) 和驗證資料載入器 ({len(val_dataset)} 樣本)")
+        
+        return train_loader, val_loader
+        
+    except Exception as e:
+        logger.error(f"建立資料載入器失敗: {e}")
+        raise
 
 
 def collate_fn(batch):
@@ -402,24 +503,27 @@ if __name__ == "__main__":
     """測試資料集模組功能"""
     # 載入配置
     config = {
-        'dataset_path': 'C:/Users/a/Desktop/研討會/PCB_DATASET',
+        'dataset_path': 'C:/Users/a/Desktop/conference/PCB_DATASET',
         'batch_size': 4,
         'img_size': 640
     }
     
     # 建立資料載入器
-    train_loader, val_loader = get_dataloader(config)
-    
-    # 驗證資料載入
-    for i, (images, targets) in enumerate(train_loader):
-        if i > 0:
-            break
-            
-        logger.info(f"批次 {i+1}:")
-        logger.info(f"圖像形狀: {images.shape}")
-        logger.info(f"目標數量: {len(targets)}")
+    try:
+        train_loader, val_loader = get_dataloader(config)
         
-        for j, target in enumerate(targets):
-            logger.info(f"  第 {j+1} 個樣本: {len(target['boxes'])} 個邊界框")
+        # 驗證資料載入
+        for i, (images, targets) in enumerate(train_loader):
+            if i > 0:
+                break
+                
+            logger.info(f"批次 {i+1}:")
+            logger.info(f"圖像形狀: {images.shape}")
+            logger.info(f"目標數量: {len(targets)}")
             
-    logger.info("資料集測試完成")
+            for j, target in enumerate(targets):
+                logger.info(f"  第 {j+1} 個樣本: {len(target['boxes'])} 個邊界框")
+                
+        logger.info("資料集測試完成")
+    except Exception as e:
+        logger.error(f"資料集測試失敗: {e}")
