@@ -232,6 +232,7 @@ class StudentModel(nn.Module):
         self.features = {}
         
         # 修改並增強模型特徵提取能力
+        self._print_model_structure()  # 診斷模型結構
         self._enhance_feature_extraction()
         
         # 註冊鉤子以擷取中間特徵
@@ -249,37 +250,76 @@ class StudentModel(nn.Module):
         
         # 註冊鉤子
         for layer_name, feature_name in feature_layers.items():
-            self._get_layer(layer_name).register_forward_hook(
-                get_features(feature_name)
-            )
+            try:
+                self._get_layer(layer_name).register_forward_hook(
+                    get_features(feature_name)
+                )
+            except Exception as e:
+                logger.warning(f"註冊鉤子時發生錯誤: {e}")
+                
     def _print_model_structure(self):
         """打印模型結構以診斷問題"""
         logger.info("打印模型結構:")
         for name, module in self.yolo_model.named_modules():
-            logger.info(f"層名稱: {name}, 類型: {type(module).__name__}")        
+            logger.info(f"層名稱: {name}, 類型: {type(module).__name__}")
+            
     def _enhance_feature_extraction(self):
         """增強模型特徵提取能力"""
-        # 提取模型關鍵層的通道數
-        c3_stage2 = self._get_layer('backbone.10')
-        c3_stage3 = self._get_layer('backbone.14')
-        
-        in_channels_stage2 = c3_stage2.c2
-        in_channels_stage3 = c3_stage3.c2
-        
-        # 添加缺陷特定注意力機制
-        self.stage2_attention = DefectSpecificAttention(in_channels_stage2)
-        self.stage3_attention = DefectSpecificAttention(in_channels_stage3)
-        
-        # 修改檢測頭，整合注意力特徵
-        original_detect = self.yolo_model.model[-1]
-        detect_in_channels = original_detect.in_channels
-        
-        # 替換檢測頭為自定義版本
-        self.yolo_model.model[-1] = EnhancedDetect(
-            nc=original_detect.nc,
-            in_channels=detect_in_channels
-        )
-        
+        try:
+            # 嘗試獲取模型層
+            c3_stage2 = None
+            c3_stage3 = None
+            
+            # 安全獲取層和通道數
+            try:
+                model_backbone = self.yolo_model.model
+                # 嘗試獲取適當的層用於特徵提取
+                if len(model_backbone) > 10:
+                    c3_stage2 = model_backbone[10]
+                    in_channels_stage2 = getattr(c3_stage2, 'c2', 128)  # 默認為128如果找不到c2
+                else:
+                    in_channels_stage2 = 128  # 默認值
+                    
+                if len(model_backbone) > 14:
+                    c3_stage3 = model_backbone[14]
+                    in_channels_stage3 = getattr(c3_stage3, 'c2', 256)  # 默認為256如果找不到c2
+                else:
+                    in_channels_stage3 = 256  # 默認值
+            except Exception as e:
+                logger.warning(f"無法獲取精確的層結構，使用默認通道數: {e}")
+                # 使用預設通道數
+                in_channels_stage2 = 128
+                in_channels_stage3 = 256
+            
+            # 添加缺陷特定注意力機制
+            self.stage2_attention = DefectSpecificAttention(in_channels_stage2)
+            self.stage3_attention = DefectSpecificAttention(in_channels_stage3)
+            
+            # 獲取檢測頭的索引（通常是最後一層）
+            detect_index = -1
+            for i, m in enumerate(self.yolo_model.model):
+                if isinstance(m, Detect):
+                    detect_index = i
+                    break
+            
+            if detect_index >= 0:
+                # 獲取原始檢測頭
+                original_detect = self.yolo_model.model[detect_index]
+                detect_in_channels = original_detect.in_channels
+                
+                # 替換檢測頭為自定義版本
+                self.yolo_model.model[detect_index] = EnhancedDetect(
+                    nc=original_detect.nc,
+                    in_channels=detect_in_channels
+                )
+                logger.info("已成功替換檢測頭")
+            else:
+                logger.warning("未找到檢測頭層，無法替換為增強版本")
+                
+        except Exception as e:
+            logger.error(f"增強特徵提取時發生錯誤: {e}")
+            logger.info("使用原始模型繼續")
+    
     def _get_layer(self, layer_name):
         """根據名稱獲取模型中的層"""
         parts = layer_name.split('.')
@@ -304,7 +344,7 @@ class StudentModel(nn.Module):
                         curr_module = getattr(curr_module, part)
                     else:
                         raise ValueError(f"無法找到層: {layer_name}, 部分: {part}")
-                    
+                
         return curr_module
         
     def forward(self, x):
