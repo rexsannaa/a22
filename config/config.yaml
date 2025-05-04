@@ -1,0 +1,89 @@
+# PCB缺陷檢測整合配置檔案
+# 本檔案整合了模型、訓練、資料處理相關配置，為PCB缺陷檢測專案提供統一的參數控制
+
+# 專案基本配置
+project:
+  name: "pcb_defect_detection"
+  version: "1.0.0"
+  description: "基於YOLO8的PCB缺陷檢測，使用知識蒸餾提升效能"
+  output_dir: "outputs"
+  seed: 42
+
+# 資料集配置
+dataset:
+  path: "C:/Users/a/Desktop/研討會/PCB_DATASET"
+  img_size: 640
+  batch_size: 16
+  num_workers: 4
+  classes:
+    - missing_hole
+    - mouse_bite
+    - spur
+    - spurious_copper
+    - pin_hole
+    - open_circuit
+  augmentation:
+    enabled: true
+    mosaic_prob: 0.5
+    flip_prob: 0.5
+    rotate_prob: 0.3
+    brightness_contrast_prob: 0.2
+
+# 模型配置
+model:
+  type: "yolov8"
+  teacher: "yolov8l.pt"
+  student: "yolov8s.pt"
+  pretrained: true
+  save_dir: "outputs/weights"
+  conf_threshold: 0.25
+  iou_threshold: 0.5
+
+# 知識蒸餾配置
+distillation:
+  enabled: true
+  temperature: 4.0
+  alpha: 0.5  # 任務損失權重
+  beta: 0.5   # 蒸餾損失權重
+  gamma: 0.5  # 特徵蒸餾權重
+  attention_transfer: true
+  feature_layers:
+    - "stage1"
+    - "stage2"
+    - "stage3"
+
+# 訓練配置
+training:
+  epochs: 100
+  learning_rate: 1.0e-4
+  min_lr: 1.0e-6
+  weight_decay: 1.0e-5
+  eval_interval: 5
+  early_stopping:
+    enabled: true
+    patience: 10
+    min_delta: 0.001
+  scheduler: "cosine"
+
+# 模型優化配置
+optimization:
+  apply_pruning: true
+  prune_amount: 0.3
+  prune_method: "l1"
+  apply_quantization: true
+  quant_type: "dynamic"
+  export_format: "onnx"
+  export: true
+
+# 視覺化與記錄配置
+visualization:
+  enabled: true
+  save_dir: "outputs/charts"
+  log_dir: "outputs/logs"
+  classes_colors:
+    missing_hole: [0, 0, 255]     # 紅色
+    mouse_bite: [0, 255, 0]       # 綠色
+    spur: [255, 0, 0]             # 藍色
+    spurious_copper: [0, 255, 255]# 黃色
+    pin_hole: [255, 0, 255]       # 紫色
+    open_circuit: [255, 255, 0]   # 青色
