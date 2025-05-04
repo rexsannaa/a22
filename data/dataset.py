@@ -77,8 +77,8 @@ class PCBDataset(Dataset):
         
         # 從每個缺陷類型的資料夾載入圖片和標註
         for defect_type in DEFECT_CLASSES.keys():
-            img_dir = os.path.join(self.imgs_path, defect_type.replace('_', '_'))
-            ann_dir = os.path.join(self.annotations_path, defect_type.replace('_', '_'))
+            img_dir = os.path.join(self.imgs_path, defect_type)
+            ann_dir = os.path.join(self.annotations_path, defect_type)
             
             if not os.path.exists(img_dir) or not os.path.exists(ann_dir):
                 logger.warning(f"找不到路徑 {img_dir} 或 {ann_dir}")
@@ -337,7 +337,18 @@ def get_dataloader(config):
         val_loader: 驗證資料載入器
     """
     # 從配置中讀取參數
-    root_dir = config.get('dataset_path', 'C:/Users/a/Desktop/研討會/PCB_DATASET')
+    if 'dataset' in config and 'path' in config['dataset']:
+        root_dir = config['dataset']['path']
+    else:
+        root_dir = config.get('dataset_path', 'C:/Users/a/Desktop/研討會/PCB_DATASET')
+    
+    # 確認路徑存在
+    if not os.path.exists(root_dir):
+        logger.error(f"資料集根目錄不存在: {root_dir}")
+        logger.info(f"當前工作目錄: {os.getcwd()}")
+        raise FileNotFoundError(f"資料集根目錄不存在: {root_dir}")
+        
+    logger.info(f"使用資料集路徑: {root_dir}")
     batch_size = config.get('batch_size', 16)
     img_size = config.get('img_size', 640)
     num_workers = config.get('num_workers', 4)
