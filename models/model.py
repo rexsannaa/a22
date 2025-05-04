@@ -284,8 +284,27 @@ class StudentModel(nn.Module):
         """根據名稱獲取模型中的層"""
         parts = layer_name.split('.')
         curr_module = self.yolo_model
-        for part in parts:
-            curr_module = curr_module[int(part)]
+        
+        # 處理第一個部分（例如 'backbone'）
+        if parts[0] == 'backbone':
+            # 如果是YOLO模型，直接獲取模型主體部分
+            curr_module = self.yolo_model.model
+            
+            # 處理剩餘部分
+            for part in parts[1:]:
+                curr_module = curr_module[int(part)]
+        else:
+            # 原有的處理邏輯
+            for part in parts:
+                try:
+                    curr_module = curr_module[int(part)]
+                except ValueError:
+                    # 嘗試將部分作為屬性名稱訪問
+                    if hasattr(curr_module, part):
+                        curr_module = getattr(curr_module, part)
+                    else:
+                        raise ValueError(f"無法找到層: {layer_name}, 部分: {part}")
+                    
         return curr_module
         
     def forward(self, x):
