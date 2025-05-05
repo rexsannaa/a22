@@ -417,10 +417,82 @@ class DistillationManager:
     
     def _compute_task_loss(self, outputs, targets):
         """計算檢測任務損失"""
-        # 這裡假設使用YOLO模型的原生損失計算
-        # 實際實現可能需要根據模型的具體輸出格式調整
-        loss_dict = self.student_model.yolo_model.model.loss(outputs, targets)
-        return sum(loss_dict.values())
+        try:
+            # 優先嘗試使用 YOLO 模型的原生損失計算方法
+            if hasattr(self.student_model.yolo_model.model, 'loss'):
+                loss_dict = self.student_model.yolo_model.model.loss(outputs, targets)
+                return sum(loss_dict.values())
+            # 檢查模型是否有 Detect 類型的檢測頭
+            elif hasattr(self.student_model.yolo_model, 'model'):
+                # 尋找檢測頭
+                for module in self.student_model.yolo_model.model:
+                    if hasattr(module, 'loss'):
+                        loss_dict = module.loss(outputs, targets)
+                        return sum(loss_dict.values())
+            
+            # 如果上述方法均失敗，實現一個簡單的替代損失計算
+            # 實現基本的檢測損失（分類損失 + 邊界框回歸損失）
+            total_loss = 0
+            
+            # 假設輸出是 YOLO 格式: [boxes, confidence, classes]
+            if isinstance(outputs, list) and len(outputs) > 0:
+                pred_boxes = outputs[0]
+                pred_conf = outputs[1] if len(outputs) > 1 else None
+                pred_cls = outputs[2] if len(outputs) > 2 else None
+                
+                # 計算邊界框損失
+                if pred_boxes is not None and targets:
+                    total_loss += self._compute_box_loss(pred_boxes, targets)
+                
+                # 如果有分類預測，計算分類損失
+                if pred_cls is not None and targets:
+                    total_loss += self._compute_cls_loss(pred_cls, targets)
+                
+                # 如果有信心度預測，計算置信度損失
+                if pred_conf is not None and targets:
+                    total_loss += self._compute_conf_loss(pred_conf, targets)
+            
+            return total_loss
+        except Exception as e:
+            logger.warning(f"計算任務損失時發生錯誤: {e}")
+            # 如果無法計算損失，返回一個零張量作為後備方案
+            return torch.tensor(0.0, device=self.device)
+
+    def _compute_box_loss(self, pred_boxes, targets):
+        """計算邊界框損失 (使用 GIoU 或 L1 損失)"""
+        loss = torch.tensor(0.0, device=self.device)
+        for i, target in enumerate(targets):
+            if 'boxes' in target and len(target['boxes']) > 0:
+                # 只計算有目標的樣本
+                gt_boxes = target['boxes']
+                # 使用最簡單的 L1 損失
+                for j, pred_box in enumerate(pred_boxes):
+                    if j < len(gt_boxes):
+                        loss += F.l1_loss(pred_box, gt_boxes[j])
+        return loss
+
+    def _compute_cls_loss(self, pred_cls, targets):
+        """計算分類損失 (使用交叉熵損失)"""
+        loss = torch.tensor(0.0, device=self.device)
+        for i, target in enumerate(targets):
+            if 'labels' in target and len(target['labels']) > 0:
+                # 只計算有目標的樣本
+                gt_labels = target['labels']
+                # 使用交叉熵損失
+                loss += F.cross_entropy(pred_cls[i:i+1], gt_labels)
+        return loss
+
+    def _compute_conf_loss(self, pred_conf, targets):
+        """計算置信度損失 (使用二元交叉熵損失)"""
+        loss = torch.tensor(0.0, device=self.device)
+        for i, target in enumerate(targets):
+            if 'boxes' in target:
+                # 建立目標置信度 (有物體為 1，無物體為 0)
+                has_obj = len(target['boxes']) > 0
+                target_conf = torch.ones_like(pred_conf[i:i+1]) if has_obj else torch.zeros_like(pred_conf[i:i+1])
+                # 使用二元交叉熵損失
+                loss += F.binary_cross_entropy_with_logits(pred_conf[i:i+1], target_conf)
+        return loss
     
     def _collect_detection_results(self, outputs, targets, 
                                  pred_boxes, pred_labels, pred_scores,

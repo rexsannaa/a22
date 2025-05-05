@@ -86,4 +86,4 @@ PCB_DATASET/
 venv/
 ENV/
 
-runs\detect
+runs/detect
