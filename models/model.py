@@ -459,7 +459,7 @@ class StudentModel(nn.Module):
                     _ = self.yolo_model.forward(x)  # 只是為了觸發特徵提取
                 # 手動構建輸出格式，與教師模型匹配
                 out = (self.yolo_model.model[-1].training_outputs 
-                    if hasattr(self.yolo_model.model[-1], 'training_outputs') 
+                    if hasattr(self.yolo_model.model [-1], 'training_outputs') 
                     else [torch.zeros(x.shape[0], 1, 1), torch.zeros(x.shape[0], 1)])
             else:
                 out = self.model(x)
