@@ -332,36 +332,51 @@ class StudentModel(nn.Module):
     def _enhance_feature_extraction(self):
         """增強模型特徵提取能力"""
         try:
-            # 嘗試獲取模型層
-            c3_stage2 = None
-            c3_stage3 = None
+            # 使用動態通道檢測
+            self.features_info = {}
             
-            # 安全獲取層和通道數
-            try:
-                model_backbone = self.yolo_model.model
-                # 嘗試獲取適當的層用於特徵提取
-                if len(model_backbone) > 10:
-                    c3_stage2 = model_backbone[10]
-                    in_channels_stage2 = getattr(c3_stage2, 'c2', 128)  # 默認為128如果找不到c2
-                else:
-                    in_channels_stage2 = 128  # 默認值
-                    
-                if len(model_backbone) > 14:
-                    c3_stage3 = model_backbone[14]
-                    in_channels_stage3 = getattr(c3_stage3, 'c2', 256)  # 默認為256如果找不到c2
-                else:
-                    in_channels_stage3 = 256  # 默認值
-            except Exception as e:
-                logger.warning(f"無法獲取精確的層結構，使用默認通道數: {e}")
-                # 使用預設通道數
-                in_channels_stage2 = 128
-                in_channels_stage3 = 256
+            # 註冊臨時鉤子來檢測特徵尺寸
+            def get_feature_info(name):
+                def hook(module, input, output):
+                    self.features_info[name] = output.shape
+                return hook
+                
+            # 記錄原始特徵尺寸的臨時鉤子
+            temp_hooks = []
+            for layer_name, feature_name in {
+                'backbone.6': 'stage1',
+                'backbone.10': 'stage2',
+                'backbone.14': 'stage3',
+            }.items():
+                try:
+                    h = self._get_layer(layer_name).register_forward_hook(
+                        get_feature_info(feature_name)
+                    )
+                    temp_hooks.append(h)
+                except Exception as e:
+                    logger.warning(f"註冊臨時鉤子時發生錯誤: {e}")
             
-            # 添加缺陷特定注意力機制
-            self.stage2_attention = DefectSpecificAttention(in_channels_stage2)
-            self.stage3_attention = DefectSpecificAttention(in_channels_stage3)
-            
-            # 獲取檢測頭的索引（通常是最後一層）
+            # 執行一次前向傳播以獲取特徵尺寸
+            dummy_input = torch.zeros(1, 3, 640, 640)
+            with torch.no_grad():
+                _ = self.yolo_model(dummy_input)
+                
+            # 移除臨時鉤子
+            for h in temp_hooks:
+                h.remove()
+                
+            # 根據實際特徵尺寸建立注意力模組
+            if 'stage2' in self.features_info:
+                channels_stage2 = self.features_info['stage2'][1]  # 獲取通道數
+                self.stage2_attention = DefectSpecificAttention(channels_stage2)
+                logger.info(f"已建立stage2注意力模組，通道數: {channels_stage2}")
+                
+            if 'stage3' in self.features_info:
+                channels_stage3 = self.features_info['stage3'][1]  # 獲取通道數
+                self.stage3_attention = DefectSpecificAttention(channels_stage3)
+                logger.info(f"已建立stage3注意力模組，通道數: {channels_stage3}")
+                
+            # 獲取檢測頭的索引
             detect_index = -1
             for i, m in enumerate(self.yolo_model.model):
                 if isinstance(m, Detect):
@@ -372,19 +387,24 @@ class StudentModel(nn.Module):
                 # 獲取原始檢測頭
                 original_detect = self.yolo_model.model[detect_index]
                 
-                # 估算輸入通道數 (根據YOLO的一般結構)
-                # 由於無法直接訪問 in_channels，我們從檢測頭的卷積層推斷
-                try:
-                    # 嘗試從 cv2 推斷通道數
-                    detect_in_channels = [
-                        original_detect.cv2[0].conv.in_channels,
-                        original_detect.cv2[1].conv.in_channels,
-                        original_detect.cv2[2].conv.in_channels
-                    ]
-                except (AttributeError, IndexError):
-                    # 如果無法獲取，使用默認值
-                    detect_in_channels = [128, 256, 512]
-                    logger.warning(f"無法推斷檢測頭通道數，使用默認值: {detect_in_channels}")
+                # 從實際前向傳播獲取通道數
+                detect_in_channels = []
+                for i in range(len(original_detect.cv2)):
+                    try:
+                        ch = original_detect.cv2[i].conv.in_channels
+                        detect_in_channels.append(ch)
+                    except (AttributeError, IndexError):
+                        # 如果無法獲取，使用默認值或從特徵圖推斷
+                        if i == 0 and 'stage1' in self.features_info:
+                            detect_in_channels.append(self.features_info['stage1'][1])
+                        elif i == 1 and 'stage2' in self.features_info:
+                            detect_in_channels.append(self.features_info['stage2'][1])
+                        elif i == 2 and 'stage3' in self.features_info:
+                            detect_in_channels.append(self.features_info['stage3'][1])
+                        else:
+                            detect_in_channels.append(256 * (2 ** i))  # 估計通道數
+                
+                logger.info(f"檢測到的檢測頭通道數: {detect_in_channels}")
                 
                 # 替換檢測頭為自定義版本
                 self.yolo_model.model[detect_index] = EnhancedDetect(
@@ -394,10 +414,13 @@ class StudentModel(nn.Module):
                 logger.info("已成功替換檢測頭")
             else:
                 logger.warning("未找到檢測頭層，無法替換為增強版本")
-                
+                    
         except Exception as e:
             logger.error(f"增強特徵提取時發生錯誤: {e}")
             logger.info("使用原始模型繼續")
+            # 確保即使出錯也能繼續訓練，禁用注意力機制
+            self.stage2_attention = None
+            self.stage3_attention = None
     
     def _get_layer(self, layer_name):
         """根據名稱獲取模型中的層"""
@@ -446,12 +469,18 @@ class StudentModel(nn.Module):
         
         # 處理中間特徵
         if self.training and self.features:
-            # 應用注意力機制到中間特徵
-            if 'stage2' in self.features:
-                self.features['stage2_enhanced'] = self.stage2_attention(self.features['stage2'])
+            # 應用注意力機制到中間特徵，安全地檢查注意力模組是否存在
+            if 'stage2' in self.features and hasattr(self, 'stage2_attention') and self.stage2_attention is not None:
+                try:
+                    self.features['stage2_enhanced'] = self.stage2_attention(self.features['stage2'])
+                except Exception as e:
+                    logger.warning(f"應用stage2注意力時發生錯誤: {e}")
             
-            if 'stage3' in self.features:
-                self.features['stage3_enhanced'] = self.stage3_attention(self.features['stage3'])
+            if 'stage3' in self.features and hasattr(self, 'stage3_attention') and self.stage3_attention is not None:
+                try:
+                    self.features['stage3_enhanced'] = self.stage3_attention(self.features['stage3'])
+                except Exception as e:
+                    logger.warning(f"應用stage3注意力時發生錯誤: {e}")
         
         return out
     
