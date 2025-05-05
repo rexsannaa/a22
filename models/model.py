@@ -136,7 +136,7 @@ class TeacherModel(nn.Module):
         os.environ['ULTRALYTICS_DATASET_DOWNLOAD'] = '0'
         
         if pretrained:
-            self.model = YOLO('yolov8l.pt', task='detect')
+            self.model = YOLO('yolov8l.pt', task='detect', val=False)  
             # 調整模型以匹配我們的類別數量
             self.model.model.nc = num_classes
             logger.info("已載入預訓練的YOLO8-L模型")
@@ -224,7 +224,7 @@ class StudentModel(nn.Module):
         os.environ['ULTRALYTICS_DATASET_DOWNLOAD'] = '0'
         
         if pretrained:
-            self.model = YOLO('yolov8s.pt', task='detect')
+            self.model = YOLO('yolov8l.pt', task='detect', val=False)  
             # 調整模型以匹配我們的類別數量
             self.model.model.nc = num_classes
             logger.info("已載入預訓練的YOLO8-S模型")
