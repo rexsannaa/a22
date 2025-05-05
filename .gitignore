@@ -57,6 +57,8 @@ temp/
 .ipynb_checkpoints/
 
 # 資料集相關 (通常不應該提交原始資料)
+datasets/
+PCB_DATASET/
 *.jpg
 *.jpeg
 *.png

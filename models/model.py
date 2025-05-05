@@ -134,15 +134,28 @@ class TeacherModel(nn.Module):
         import os
         os.environ['YOLO_AUTOINSTALL'] = '0'
         os.environ['ULTRALYTICS_DATASET_DOWNLOAD'] = '0'
-        
+        os.environ['ULTRALYTICS_SKIP_VALIDATION'] = '1'  # 添加這行跳過驗證
+
         if pretrained:
-            self.model = YOLO('yolov8l.pt', task='detect')  
+            self.model = YOLO('yolov8l.pt')  # 移除 task='detect' 參數
             # 調整模型以匹配我們的類別數量
             self.model.model.nc = num_classes
+            
+            # 禁用驗證和數據集下載
+            if hasattr(self.model, 'args'):
+                self.model.args.val = False  # 禁用驗證
+                self.model.args.data = None  # 不使用任何數據集進行驗證
+            
             logger.info("已載入預訓練的YOLO8-L模型")
         else:
-            self.model = YOLO('yolov8l.yaml', task='detect')
+            self.model = YOLO('yolov8l.yaml')  # 移除 task='detect' 參數
             self.model.model.nc = num_classes
+            
+            # 禁用驗證和數據集下載
+            if hasattr(self.model, 'args'):
+                self.model.args.val = False  # 禁用驗證
+                self.model.args.data = None  # 不使用任何數據集進行驗證
+            
             logger.info("已初始化YOLO8-L模型")
             
         # 獲取內部模型供直接操作
@@ -222,17 +235,30 @@ class StudentModel(nn.Module):
         import os
         os.environ['YOLO_AUTOINSTALL'] = '0'
         os.environ['ULTRALYTICS_DATASET_DOWNLOAD'] = '0'
+        os.environ['ULTRALYTICS_SKIP_VALIDATION'] = '1'  # 添加這行跳過驗證
         
         if pretrained:
-            self.model = YOLO('yolov8l.pt', task='detect')  
+            self.model = YOLO('yolov8s.pt')  # 移除 task='detect' 參數
             # 調整模型以匹配我們的類別數量
             self.model.model.nc = num_classes
+            
+            # 禁用驗證和數據集下載
+            if hasattr(self.model, 'args'):
+                self.model.args.val = False  # 禁用驗證
+                self.model.args.data = None  # 不使用任何數據集進行驗證
+            
             logger.info("已載入預訓練的YOLO8-S模型")
         else:
-            self.model = YOLO('yolov8s.yaml', task='detect')
+            self.model = YOLO('yolov8s.yaml')  # 移除 task='detect' 參數
             self.model.model.nc = num_classes
-            logger.info("已初始化YOLO8-S模型")
             
+            # 禁用驗證和數據集下載
+            if hasattr(self.model, 'args'):
+                self.model.args.val = False  # 禁用驗證
+                self.model.args.data = None  # 不使用任何數據集進行驗證
+            
+            logger.info("已初始化YOLO8-S模型")
+                
         # 獲取內部模型供直接操作
         self.yolo_model = self.model.model
         
