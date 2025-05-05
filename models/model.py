@@ -122,39 +122,55 @@ class TeacherModel(nn.Module):
     
     def __init__(self, num_classes=len(DEFECT_CLASSES), pretrained=True):
         """
-        初始化教師模型
+        初始化學生模型
         
         參數:
             num_classes: 缺陷類別數量
             pretrained: 是否使用預訓練權重
         """
-        super(TeacherModel, self).__init__()
+        super(StudentModel, self).__init__()
         
         # 載入YOLO8-L (禁止自動下載數據集)
         import os
         os.environ['YOLO_AUTOINSTALL'] = '0'
         os.environ['ULTRALYTICS_DATASET_DOWNLOAD'] = '0'
         os.environ['ULTRALYTICS_SKIP_VALIDATION'] = '1'  # 添加這行跳過驗證
-
+        
         if pretrained:
             self.model = YOLO('yolov8l.pt')  # 移除 task='detect' 參數
             # 調整模型以匹配我們的類別數量
             self.model.model.nc = num_classes
             
-            # 禁用驗證和數據集下載
+            # 禁用驗證和數據集下載 - 修改這裡的訪問方式
             if hasattr(self.model, 'args'):
-                self.model.args.val = False  # 禁用驗證
-                self.model.args.data = None  # 不使用任何數據集進行驗證
+                if isinstance(self.model.args, dict):
+                    # 如果args是字典，直接設置鍵值
+                    self.model.args['val'] = False
+                    self.model.args['data'] = None
+                else:
+                    # 如果args是對象，設置屬性
+                    try:
+                        self.model.args.val = False
+                        self.model.args.data = None
+                    except:
+                        logger.warning("無法設置YOLO模型驗證參數，可能仍會嘗試下載COCO數據集")
             
             logger.info("已載入預訓練的YOLO8-L模型")
         else:
             self.model = YOLO('yolov8l.yaml')  # 移除 task='detect' 參數
             self.model.model.nc = num_classes
             
-            # 禁用驗證和數據集下載
+            # 同樣修改這裡的訪問方式
             if hasattr(self.model, 'args'):
-                self.model.args.val = False  # 禁用驗證
-                self.model.args.data = None  # 不使用任何數據集進行驗證
+                if isinstance(self.model.args, dict):
+                    self.model.args['val'] = False
+                    self.model.args['data'] = None
+                else:
+                    try:
+                        self.model.args.val = False
+                        self.model.args.data = None
+                    except:
+                        logger.warning("無法設置YOLO模型驗證參數，可能仍會嘗試下載COCO數據集")
             
             logger.info("已初始化YOLO8-L模型")
             
@@ -242,20 +258,36 @@ class StudentModel(nn.Module):
             # 調整模型以匹配我們的類別數量
             self.model.model.nc = num_classes
             
-            # 禁用驗證和數據集下載
+            # 禁用驗證和數據集下載 - 修改這裡的訪問方式
             if hasattr(self.model, 'args'):
-                self.model.args.val = False  # 禁用驗證
-                self.model.args.data = None  # 不使用任何數據集進行驗證
+                if isinstance(self.model.args, dict):
+                    # 如果args是字典，直接設置鍵值
+                    self.model.args['val'] = False
+                    self.model.args['data'] = None
+                else:
+                    # 如果args是對象，設置屬性
+                    try:
+                        self.model.args.val = False
+                        self.model.args.data = None
+                    except:
+                        logger.warning("無法設置YOLO模型驗證參數，可能仍會嘗試下載COCO數據集")
             
             logger.info("已載入預訓練的YOLO8-S模型")
         else:
             self.model = YOLO('yolov8s.yaml')  # 移除 task='detect' 參數
             self.model.model.nc = num_classes
             
-            # 禁用驗證和數據集下載
+            # 同樣修改這裡的訪問方式
             if hasattr(self.model, 'args'):
-                self.model.args.val = False  # 禁用驗證
-                self.model.args.data = None  # 不使用任何數據集進行驗證
+                if isinstance(self.model.args, dict):
+                    self.model.args['val'] = False
+                    self.model.args['data'] = None
+                else:
+                    try:
+                        self.model.args.val = False
+                        self.model.args.data = None
+                    except:
+                        logger.warning("無法設置YOLO模型驗證參數，可能仍會嘗試下載COCO數據集")
             
             logger.info("已初始化YOLO8-S模型")
                 
