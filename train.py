@@ -15,6 +15,7 @@ import os
 # 設置環境變數防止下載COCO數據集
 os.environ['YOLO_AUTOINSTALL'] = '0'
 os.environ['ULTRALYTICS_DATASET_DOWNLOAD'] = '0'
+os.environ['ULTRALYTICS_SKIP_VALIDATION'] = '1'
 import argparse
 import torch
 import yaml
