@@ -245,7 +245,7 @@ class StudentModel(nn.Module):
             num_classes: 缺陷類別數量
             pretrained: 是否使用預訓練權重
         """
-        super(StudentModel, self).__init__()
+        super(TeacherModel, self).__init__()
         
         # 載入YOLO8-S (禁止自動下載數據集)
         import os
