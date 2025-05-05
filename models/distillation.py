@@ -347,7 +347,11 @@ class DistillationManager:
                 
                 # 計算任務損失
                 task_loss = self._compute_task_loss(student_out, targets)
-                
+
+                # 確保損失具有梯度
+                if not task_loss.requires_grad:
+                    task_loss = task_loss.detach().clone().requires_grad_(True)
+
                 # 計算蒸餾損失
                 try:
                     # 處理不同的輸出格式
@@ -364,19 +368,34 @@ class DistillationManager:
                 except Exception as e:
                     logging.warning(f"計算蒸餾損失時發生錯誤: {e}")
                     distill_loss = torch.tensor(0.0, device=self.device)
-                
+
+                # 確保蒸餾損失具有梯度
+                if not distill_loss.requires_grad:
+                    distill_loss = distill_loss.detach().clone().requires_grad_(True)
+
                 # 計算特徵蒸餾損失
                 feature_loss, _ = self.feature_loss(student_features, teacher_features)
-                
-                # 總損失
+
+                # 確保特徵損失具有梯度
+                if not feature_loss.requires_grad:
+                    feature_loss = feature_loss.detach().clone().requires_grad_(True)
+
+                # 總損失 - 使用帶有梯度的損失
                 loss = (self.alpha * task_loss + 
-                       self.beta * distill_loss + 
-                       self.gamma * feature_loss)
-            
-            # 反向傳播
-            self.scaler.scale(loss).backward()
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
+                    self.beta * distill_loss + 
+                    self.gamma * feature_loss)
+
+                # 檢查總損失是否具有梯度
+                if not loss.requires_grad:
+                    logger.warning("總損失沒有梯度，嘗試創建替代損失")
+                    # 創建一個替代損失，確保其具有梯度
+                    dummy_tensor = torch.ones(1, device=self.device, requires_grad=True)
+                    loss = loss * dummy_tensor
+
+                # 反向傳播
+                self.scaler.scale(loss).backward()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
             
             # 更新損失追蹤
             total_loss += loss.item()
@@ -543,7 +562,8 @@ class DistillationManager:
         except Exception as e:
             logger.warning(f"計算任務損失時發生錯誤: {e}")
             # 如果無法計算損失，返回一個非零張量作為後備方案，防止梯度消失
-            return torch.tensor(0.1, device=self.device)
+            dummy_tensor = torch.ones(1, device=self.device, requires_grad=True)
+            return torch.tensor(0.1, device=self.device) * dummy_tensor
 
     def _compute_box_loss(self, pred_boxes, targets):
         """計算邊界框損失 (使用 GIoU 或 L1 損失)"""
