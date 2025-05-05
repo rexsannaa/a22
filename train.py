@@ -425,6 +425,12 @@ def main():
             
     else:
         # 訓練模型
+        # 添加特殊處理，防止使用YOLO的train方法
+        if hasattr(teacher_model, 'model'):
+            teacher_model.model.use_custom_train = True
+        if hasattr(student_model, 'model'):
+            student_model.model.use_custom_train = True
+
         trained_model, best_metrics = train(
             config=config,
             teacher_model=teacher_model,

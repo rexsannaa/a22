@@ -221,10 +221,37 @@ class PCBDataset(Dataset):
             img = np.zeros((self.img_size, self.img_size, 3), dtype=np.uint8)
             
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        # 確保圖片尺寸一致
+        h, w = img.shape[:2]
+        if h != self.img_size or w != self.img_size:
+            # 記錄原始尺寸，用於調整邊界框
+            orig_h, orig_w = h, w
+            # 調整圖片尺寸
+            img = cv2.resize(img, (self.img_size, self.img_size))
+            # 更新長寬比例，用於後續邊界框調整
+            h_ratio, w_ratio = self.img_size / orig_h, self.img_size / orig_w
         
         # 讀取標註
         ann_path = self.annotation_files[idx]
         boxes, labels = self._parse_annotation(ann_path)
+
+        # 調整邊界框坐標以匹配調整後的圖片尺寸
+        if 'h_ratio' in locals() and 'w_ratio' in locals():
+            adjusted_boxes = []
+            for box in boxes:
+                xmin, ymin, xmax, ymax = box
+                # 如果坐標是相對的 (0-1範圍)，則不需要調整
+                if max(xmin, ymin, xmax, ymax) <= 1.0:
+                    adjusted_boxes.append(box)
+                else:
+                    # 將絕對坐標轉換為相對坐標
+                    xmin = (xmin * w_ratio) / self.img_size
+                    ymin = (ymin * h_ratio) / self.img_size
+                    xmax = (xmax * w_ratio) / self.img_size
+                    ymax = (ymax * h_ratio) / self.img_size
+                    adjusted_boxes.append([xmin, ymin, xmax, ymax])
+            boxes = adjusted_boxes
         
         # 應用資料增強
         if self.use_augmentation:
@@ -278,42 +305,45 @@ class PCBDataset(Dataset):
                 img = np.zeros((self.img_size, self.img_size, 3), dtype=np.uint8)
                 
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            boxes, labels = self._parse_annotation(ann_path)
+            
+            # 獲取原始尺寸
+            orig_h, orig_w = img.shape[:2]
             
             # 確定位置(左上、右上、左下、右下)
             x_offset = (i % 2) * self.img_size
             y_offset = (i // 2) * self.img_size
             
-            # 調整大小
-            h, w = img.shape[:2]
-            resize_ratio = min(self.img_size / w, self.img_size / h)
-            new_w, new_h = int(w * resize_ratio), int(h * resize_ratio)
-            resized_img = cv2.resize(img, (new_w, new_h))
+            # 調整大小到指定尺寸
+            resized_img = cv2.resize(img, (self.img_size, self.img_size))
             
             # 放入Mosaic畫布
-            mosaic_img[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized_img
+            mosaic_img[y_offset:y_offset+self.img_size, x_offset:x_offset+self.img_size] = resized_img
+            
+            # 讀取標註
+            boxes, labels = self._parse_annotation(ann_path)
             
             # 調整邊界框坐標
             if len(boxes) > 0:
-                # 縮放邊界框
-                scaled_boxes = []
+                # 處理相對坐標的邊界框
+                adjusted_boxes = []
                 for box in boxes:
                     xmin, ymin, xmax, ymax = box
-                    scaled_boxes.append([
-                        xmin * resize_ratio + x_offset,
-                        ymin * resize_ratio + y_offset,
-                        xmax * resize_ratio + x_offset,
-                        ymax * resize_ratio + y_offset
+                    # 調整邊界框到mosaic區域中的位置
+                    adjusted_boxes.append([
+                        (xmin + (i % 2)) * 0.5,  # 考慮x方向的位置
+                        (ymin + (i // 2)) * 0.5,  # 考慮y方向的位置
+                        (xmax + (i % 2)) * 0.5,
+                        (ymax + (i // 2)) * 0.5
                     ])
                 
-                combined_boxes.extend(scaled_boxes)
+                combined_boxes.extend(adjusted_boxes)
                 combined_labels.extend(labels)
         
         # 裁剪到目標大小
         mosaic_img = cv2.resize(mosaic_img, (self.img_size, self.img_size))
         
         # 調整邊界框到新大小
-        ratio = self.img_size / (self.img_size * 2)
+        ratio = 0.5  # 從2x尺寸到1x尺寸
         final_boxes = []
         for box in combined_boxes:
             xmin, ymin, xmax, ymax = box
@@ -377,6 +407,7 @@ class PCBDataset(Dataset):
                 if bbox is None:
                     continue
                     
+                # 確保使用相對坐標 (0-1範圍)
                 xmin = float(bbox.find('xmin').text) / img_width
                 ymin = float(bbox.find('ymin').text) / img_height
                 xmax = float(bbox.find('xmax').text) / img_width
@@ -397,9 +428,11 @@ class PCBDataset(Dataset):
     def _get_default_transforms(self):
         """獲取默認的圖像轉換"""
         return transforms.Compose([
+            transforms.ToPILImage(),  # 先轉換為 PIL 圖像
+            transforms.Resize((self.img_size, self.img_size)),  # 調整大小為相同尺寸
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                                 std=[0.229, 0.224, 0.225])
+                                std=[0.229, 0.224, 0.225])
         ])
     
     def _get_augmentations(self):
@@ -494,9 +527,35 @@ def get_dataloader(config):
 
 
 def collate_fn(batch):
-    """自定義批次組合函數，處理不同尺寸的邊界框"""
-    images, targets = list(zip(*batch))
-    return torch.stack(images), targets
+    """自定義批次組合函數，處理不同尺寸的圖片"""
+    images = []
+    targets = []
+    
+    for img, tgt in batch:
+        # 如果輸入已經是張量，則直接使用
+        if isinstance(img, torch.Tensor):
+            images.append(img)
+        else:
+            # 否則轉換為張量
+            images.append(torch.from_numpy(img).permute(2, 0, 1))
+        targets.append(tgt)
+    
+    # 找出最大的寬度和高度
+    max_width = max(img.shape[2] for img in images)
+    max_height = max(img.shape[1] for img in images)
+    
+    # 填充所有圖片到相同大小
+    padded_images = []
+    for img in images:
+        c, h, w = img.shape
+        padded_img = torch.zeros((c, max_height, max_width), dtype=img.dtype)
+        padded_img[:, :h, :w] = img
+        padded_images.append(padded_img)
+    
+    # 堆疊填充後的圖片
+    images = torch.stack(padded_images)
+    
+    return images, targets
 
 
 if __name__ == "__main__":

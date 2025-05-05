@@ -239,7 +239,15 @@ class DistillationManager:
         """
         # 設定為訓練模式
         self.teacher_model.eval()  # 教師模型保持評估模式
-        self.student_model.train()
+        if hasattr(self.student_model, 'yolo_model'):
+            # 使用PyTorch的標準train模式設置方法
+            self.student_model.yolo_model.model.eval()  # 先設為eval模式確保一致性
+            for module in self.student_model.yolo_model.model.modules():
+                if isinstance(module, torch.nn.Module) and hasattr(module, 'training'):
+                    module.training = True
+        else:
+            # 普通PyTorch模型
+            self.student_model.train()
         
         # 損失追蹤
         total_loss = 0

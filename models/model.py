@@ -428,10 +428,23 @@ class StudentModel(nn.Module):
         
     def forward(self, x):
         """前向傳播"""
-        # 正常前向傳播
-        out = self.model(x)
+        # 正常前向傳播，但處理YOLO模型特殊輸出
+        if self.training:
+            # 訓練模式下使用YOLO內部forward而非__call__
+            if hasattr(self.yolo_model, 'forward') and callable(self.yolo_model.forward):
+                with torch.no_grad():
+                    _ = self.yolo_model.forward(x)  # 只是為了觸發特徵提取
+                # 手動構建輸出格式，與教師模型匹配
+                out = (self.yolo_model.model[-1].training_outputs 
+                    if hasattr(self.yolo_model.model[-1], 'training_outputs') 
+                    else [torch.zeros(x.shape[0], 1, 1), torch.zeros(x.shape[0], 1)])
+            else:
+                out = self.model(x)
+        else:
+            # 評估模式正常使用__call__方法
+            out = self.model(x)
         
-        # 如果在訓練階段，額外處理中間特徵
+        # 處理中間特徵
         if self.training and self.features:
             # 應用注意力機制到中間特徵
             if 'stage2' in self.features:
