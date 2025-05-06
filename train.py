@@ -1319,27 +1319,29 @@ def train_teacher_model(teacher_model, train_loader, val_loader, config):
                     
                     # 計算損失
                     if hasattr(teacher_model, 'model') and hasattr(teacher_model.model, 'model') and hasattr(teacher_model.model.model, 'loss'):
-                        # 收集預測結果和真實標籤
-                    if hasattr(outputs, 'boxes'):
-                        try:
-                            # 獲取預測框
-                            detection_boxes = outputs.boxes
-                            
-                            # 提取預測
-                            boxes = detection_boxes.xyxy.cpu().numpy() if len(detection_boxes) > 0 else np.array([])
-                            scores = detection_boxes.conf.cpu().numpy() if len(detection_boxes) > 0 else np.array([])
-                            labels = detection_boxes.cls.cpu().numpy() if len(detection_boxes) > 0 else np.array([])
-                            
-                            # 添加到結果列表
-                            all_pred_boxes.append(boxes)
-                            all_pred_scores.append(scores)
-                            all_pred_labels.append(labels)
-                        except Exception as e:
-                            logger.warning(f"處理YOLO檢測結果時發生錯誤: {e}")
-                            # 添加空結果
-                            all_pred_boxes.append(np.array([]))
-                            all_pred_scores.append(np.array([]))
-                            all_pred_labels.append(np.array([]))
+                        # 計算損失
+                        if hasattr(teacher_model, 'model') and hasattr(teacher_model.model, 'model') and hasattr(teacher_model.model.model, 'loss'):
+                            # 收集預測結果和真實標籤
+                            if hasattr(outputs, 'boxes'):
+                                try:
+                                    # 獲取預測框
+                                    detection_boxes = outputs.boxes
+                                    
+                                    # 提取預測
+                                    boxes = detection_boxes.xyxy.cpu().numpy() if len(detection_boxes) > 0 else np.array([])
+                                    scores = detection_boxes.conf.cpu().numpy() if len(detection_boxes) > 0 else np.array([])
+                                    labels = detection_boxes.cls.cpu().numpy() if len(detection_boxes) > 0 else np.array([])
+                                    
+                                    # 添加到結果列表
+                                    all_pred_boxes.append(boxes)
+                                    all_pred_scores.append(scores)
+                                    all_pred_labels.append(labels)
+                                except Exception as e:
+                                    logger.warning(f"處理YOLO檢測結果時發生錯誤: {e}")
+                                    # 添加空結果
+                                    all_pred_boxes.append(np.array([]))
+                                    all_pred_scores.append(np.array([]))
+                                    all_pred_labels.append(np.array([]))
                             
                         # 收集真實標籤
                         for target in targets:
