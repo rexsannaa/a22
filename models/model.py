@@ -137,28 +137,40 @@ class TeacherModel(nn.Module):
         os.environ['ULTRALYTICS_SKIP_VALIDATION'] = '1'  # 添加這行跳過驗證
         
         if pretrained:
-            self.model = YOLO('yolov8l.pt')  # 移除 task='detect' 參數
-            # 調整模型以匹配我們的類別數量
-            self.model.model.nc = num_classes
+            # 修改載入方式，確保不會使用COCO數據集的類別
+            self.model = YOLO('yolov8l.pt')
+            # 直接設置模型的類別數量
+            if hasattr(self.model, 'model'):
+                self.model.model.nc = num_classes
+                logger.info(f"已設置教師模型類別數量為: {num_classes}")
+                
+                # 設置輸出層以匹配類別數量
+                if hasattr(self.model.model, 'model'):
+                    for m in self.model.model.model:
+                        if hasattr(m, 'nc'):
+                            m.nc = num_classes
+                            logger.info(f"已設置檢測頭類別數量為: {num_classes}")
             
-            # 禁用驗證和數據集下載 - 修改這裡的訪問方式
+            # 禁用驗證和數據集下載
             if hasattr(self.model, 'args'):
                 if isinstance(self.model.args, dict):
-                    # 如果args是字典，直接設置鍵值
                     self.model.args['val'] = False
                     self.model.args['data'] = None
                 else:
-                    # 如果args是對象，設置屬性
                     try:
                         self.model.args.val = False
                         self.model.args.data = None
                     except:
                         logger.warning("無法設置YOLO模型驗證參數，可能仍會嘗試下載COCO數據集")
             
-            logger.info("已載入預訓練的YOLO8-L模型")
+            logger.info("已載入預訓練的YOLO8-L模型，並設置為PCB缺陷類別")
         else:
-            self.model = YOLO('yolov8l.yaml')  # 移除 task='detect' 參數
-            self.model.model.nc = num_classes
+            # 從YAML配置初始化模型，不載入預訓練權重
+            self.model = YOLO('yolov8l.yaml')
+            # 調整為PCB缺陷類別數量
+            if hasattr(self.model, 'model'):
+                self.model.model.nc = num_classes
+                logger.info(f"已初始化教師模型類別數量為: {num_classes}")
             
             # 同樣修改這裡的訪問方式
             if hasattr(self.model, 'args'):

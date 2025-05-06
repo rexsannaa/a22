@@ -370,6 +370,28 @@ def train(config, teacher_model=None, student_model=None, use_distillation=True,
         teacher_config['epochs'] = config.get('teacher_epochs', config.get('epochs', 100))
         teacher_config['learning_rate'] = config.get('teacher_learning_rate', config.get('learning_rate', 1e-4))
         
+        # 確保教師模型設置了正確的類別數量
+        if hasattr(teacher_model, 'model') and hasattr(teacher_model.model, 'model'):
+            num_classes = len(DEFECT_CLASSES) if 'DEFECT_CLASSES' in globals() else 6
+            # 嘗試設置模型的類別數量
+            try:
+                teacher_model.model.model.nc = num_classes
+                logger.info(f"已設置教師模型類別數量為: {num_classes}")
+            except Exception as e:
+                logger.warning(f"設置教師模型類別數量時發生錯誤: {e}")
+        
+        # 禁用驗證和數據集下載
+        try:
+            if hasattr(teacher_model, 'model') and hasattr(teacher_model.model, 'args'):
+                if isinstance(teacher_model.model.args, dict):
+                    teacher_model.model.args['val'] = False
+                    teacher_model.model.args['data'] = None
+                else:
+                    teacher_model.model.args.val = False
+                    teacher_model.model.args.data = None
+        except Exception as e:
+            logger.warning(f"設置YOLO模型參數時發生錯誤: {e}")
+        
         # 訓練教師模型
         teacher_model, teacher_metrics = train_model(
             model=teacher_model,
