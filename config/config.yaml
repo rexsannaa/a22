@@ -87,3 +87,10 @@ visualization:
     spurious_copper: [0, 255, 255] # 黃色
     pin_hole: [255, 0, 255]       # 紫色
     open_circuit: [255, 255, 0]   # 青色
+
+# 教師模型訓練配置
+teacher_training:
+  epochs: 50  # 教師模型的訓練周期
+  learning_rate: 5.0e-5  # 教師模型的學習率
+  weight_decay: 1.0e-5
+  eval_interval: 5  # 評估間隔

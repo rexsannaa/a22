@@ -203,14 +203,14 @@ def train_model(model, train_loader, val_loader, config, model_type="student"):
             
             # 計算mAP等評估指標
             from utils.utils import calculate_map
-            
+
             # 收集預測和真實標籤
             all_pred_boxes = []
             all_pred_labels = []
             all_pred_scores = []
             all_gt_boxes = []
             all_gt_labels = []
-            
+
             with torch.no_grad():
                 for images, targets in tqdm(val_loader, desc="Collecting predictions"):
                     images = images.to(device)
@@ -218,51 +218,64 @@ def train_model(model, train_loader, val_loader, config, model_type="student"):
                     outputs = model(images)
                     
                     # 處理預測結果 (根據模型輸出格式調整)
-                    if hasattr(outputs, 'boxes'):
+                    if hasattr(outputs, 'boxes') and hasattr(outputs.boxes, 'xyxy'):
                         # YOLO8 原生格式
                         for i, img in enumerate(images):
                             # 過濾該批次的預測
-                            img_boxes = []
-                            img_scores = []
-                            img_labels = []
+                            batch_boxes = []
+                            batch_scores = []
+                            batch_labels = []
                             
                             # 提取當前圖像的檢測結果
                             for j, box in enumerate(outputs.boxes):
-                                # 檢查是否屬於當前圖像
-                                if box.batch_idx.item() == i:
-                                    img_boxes.append(box.xyxy[0].cpu().numpy())
-                                    img_scores.append(box.conf.item())
-                                    img_labels.append(int(box.cls.item()))
+                                # 檢查是否屬於當前圖像 (如果batch_idx存在)
+                                if hasattr(box, 'batch_idx'):
+                                    if box.batch_idx.item() == i:
+                                        batch_boxes.append(box.xyxy[0].cpu().numpy())
+                                        batch_scores.append(box.conf.item())
+                                        batch_labels.append(int(box.cls.item()))
+                                else:
+                                    # 如果沒有batch_idx，假定所有框都屬於同一張圖
+                                    batch_boxes.append(box.xyxy[0].cpu().numpy())
+                                    batch_scores.append(box.conf.item())
+                                    batch_labels.append(int(box.cls.item()))
                             
                             # 添加到收集列表
-                            all_pred_boxes.append(np.array(img_boxes))
-                            all_pred_scores.append(np.array(img_scores))
-                            all_pred_labels.append(np.array(img_labels))
+                            all_pred_boxes.append(np.array(batch_boxes))
+                            all_pred_scores.append(np.array(batch_scores))
+                            all_pred_labels.append(np.array(batch_labels))
                             
                             # 提取真實標籤
-                            target = targets[i]
-                            all_gt_boxes.append(target['boxes'].cpu().numpy())
-                            all_gt_labels.append(target['labels'].cpu().numpy())
+                            if i < len(targets):
+                                target = targets[i]
+                                all_gt_boxes.append(target['boxes'].cpu().numpy())
+                                all_gt_labels.append(target['labels'].cpu().numpy())
                     else:
                         # 處理其他格式的輸出
-                        for batch_idx, output in enumerate(outputs):
-                            # 提取預測
-                            if isinstance(output, list) or isinstance(output, tuple):
-                                if len(output) >= 3:  # [boxes, scores, labels]
+                        for batch_idx, target in enumerate(targets):
+                            # 提取真實標籤
+                            all_gt_boxes.append(target['boxes'].cpu().numpy())
+                            all_gt_labels.append(target['labels'].cpu().numpy())
+                            
+                            # 嘗試不同的方式處理預測結果
+                            if isinstance(outputs, (list, tuple)) and len(outputs) > batch_idx:
+                                output = outputs[batch_idx]
+                                if isinstance(output, (list, tuple)) and len(output) >= 3:
+                                    # [boxes, scores, labels] 格式
                                     boxes = output[0]
                                     scores = output[1]
                                     labels = output[2]
                                     
-                                    all_pred_boxes.append(boxes.cpu().numpy())
-                                    all_pred_scores.append(scores.cpu().numpy())
-                                    all_pred_labels.append(labels.cpu().numpy())
+                                    all_pred_boxes.append(boxes.cpu().numpy() if isinstance(boxes, torch.Tensor) else np.array([]))
+                                    all_pred_scores.append(scores.cpu().numpy() if isinstance(scores, torch.Tensor) else np.array([]))
+                                    all_pred_labels.append(labels.cpu().numpy() if isinstance(labels, torch.Tensor) else np.array([]))
                                 else:
-                                    # 不完整的輸出，添加空數組
+                                    # 添加空列表，表示沒有檢測到任何物體
                                     all_pred_boxes.append(np.array([]))
                                     all_pred_scores.append(np.array([]))
                                     all_pred_labels.append(np.array([]))
                             else:
-                                # 不支持的輸出格式，添加空數組
+                                # 添加空列表，表示沒有檢測到任何物體
                                 all_pred_boxes.append(np.array([]))
                                 all_pred_scores.append(np.array([]))
                                 all_pred_labels.append(np.array([]))
