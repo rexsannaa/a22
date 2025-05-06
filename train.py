@@ -48,6 +48,8 @@ def parse_args():
                         help='教師模型路徑(如不指定，則使用預訓練模型)')
     parser.add_argument('--student', type=str, default=None,
                         help='學生模型路徑(如不指定，則從頭訓練)')
+    parser.add_argument('--train-teacher', action='store_true',
+                        help='先訓練教師模型再進行知識蒸餾')
     parser.add_argument('--no-distill', action='store_true',
                         help='不使用知識蒸餾(直接訓練學生模型)')
     parser.add_argument('--eval-only', action='store_true',
@@ -58,7 +60,269 @@ def parse_args():
                         help='生成視覺化預測結果')
     return parser.parse_args()
 
-def train(config, teacher_model=None, student_model=None, use_distillation=True):
+def train_model(model, train_loader, val_loader, config, model_type="student"):
+    """訓練單一模型(教師或學生)
+    
+    參數:
+        model: 要訓練的模型
+        train_loader: 訓練資料載入器
+        val_loader: 驗證資料載入器
+        config: 配置字典
+        model_type: "teacher" 或 "student"
+        
+    回傳:
+        model: 訓練後的模型
+        best_metrics: 最佳評估指標
+    """
+    # 設置隨機種子確保可重現性
+    torch.manual_seed(config.get('seed', 42))
+    
+    # 設定裝置
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logger.info(f"使用設備: {device}")
+    
+    # 設置實驗目錄
+    exp_dirs = setup_experiment(config)
+    weights_dir = exp_dirs['weights_dir']
+    charts_dir = exp_dirs['charts_dir']
+    logs_dir = exp_dirs['logs_dir']
+    
+    # 將模型移到設備上
+    model = model.to(device)
+    
+    # 訓練參數
+    epochs = config.get('epochs', 100)
+    learning_rate = config.get('learning_rate', 1e-4)
+    weight_decay = config.get('weight_decay', 1e-5)
+    
+    # 設置優化器
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=learning_rate,
+        weight_decay=weight_decay
+    )
+    
+    # 設置學習率調度器
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=epochs,
+        eta_min=config.get('min_lr', 1e-6)
+    )
+    
+    # 初始化指標追蹤
+    best_metrics = {'mAP': 0, 'precision': 0, 'recall': 0}
+    metrics_history = {
+        'train_loss': [],
+        'val_loss': [],
+        'mAP': [],
+        'precision': [],
+        'recall': []
+    }
+    
+    total_timer = Timer().start()
+    best_epoch = 0
+    
+    for epoch in range(epochs):
+        # 訓練一個周期
+        model.train()
+        epoch_loss = 0
+        
+        with tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}") as pbar:
+            for images, targets in pbar:
+                # 將資料移到設備上
+                images = images.to(device)
+                for t in targets:
+                    for k, v in t.items():
+                        if isinstance(v, torch.Tensor):
+                            t[k] = v.to(device)
+                
+                # 清除梯度
+                optimizer.zero_grad()
+                
+                # 前向傳播
+                outputs = model(images)
+                
+                # 計算損失 (根據模型類型調整)
+                if hasattr(model, 'model') and hasattr(model.model, 'model') and hasattr(model.model.model, 'loss'):
+                    loss_dict = model.model.model.loss(outputs, targets)
+                    loss = sum(loss_dict.values())
+                else:
+                    # 如果模型沒有內建損失函數，使用自定義損失計算
+                    from models.distillation import DistillationManager
+                    dummy_manager = DistillationManager(None, model, config)
+                    loss = dummy_manager._compute_task_loss(outputs, targets)
+                
+                # 反向傳播
+                loss.backward()
+                optimizer.step()
+                
+                # 更新進度條
+                epoch_loss += loss.item()
+                pbar.set_postfix({'loss': loss.item()})
+        
+        # 更新學習率
+        scheduler.step()
+        
+        # 計算平均訓練損失
+        avg_train_loss = epoch_loss / len(train_loader)
+        metrics_history['train_loss'].append(avg_train_loss)
+        
+        # 定期評估
+        if (epoch + 1) % config.get('eval_interval', 5) == 0 or epoch == epochs - 1:
+            # 評估模型
+            model.eval()
+            val_loss = 0
+            
+            with torch.no_grad():
+                for images, targets in tqdm(val_loader, desc="Validation"):
+                    # 將資料移到設備上
+                    images = images.to(device)
+                    for t in targets:
+                        for k, v in t.items():
+                            if isinstance(v, torch.Tensor):
+                                t[k] = v.to(device)
+                    
+                    # 前向傳播
+                    outputs = model(images)
+                    
+                    # 計算損失
+                    if hasattr(model, 'model') and hasattr(model.model, 'model') and hasattr(model.model.model, 'loss'):
+                        loss_dict = model.model.model.loss(outputs, targets)
+                        loss = sum(loss_dict.values())
+                    else:
+                        # 使用自定義損失計算
+                        from models.distillation import DistillationManager
+                        dummy_manager = DistillationManager(None, model, config)
+                        loss = dummy_manager._compute_task_loss(outputs, targets)
+                        
+                    val_loss += loss.item()
+            
+            # 計算平均驗證損失
+            avg_val_loss = val_loss / len(val_loader)
+            metrics_history['val_loss'].append(avg_val_loss)
+            
+            # 計算mAP等評估指標
+            from utils.utils import calculate_map
+            
+            # 收集預測和真實標籤
+            all_pred_boxes = []
+            all_pred_labels = []
+            all_pred_scores = []
+            all_gt_boxes = []
+            all_gt_labels = []
+            
+            with torch.no_grad():
+                for images, targets in tqdm(val_loader, desc="Collecting predictions"):
+                    images = images.to(device)
+                    # 獲取預測
+                    outputs = model(images)
+                    
+                    # 處理預測結果 (根據模型輸出格式調整)
+                    if hasattr(outputs, 'boxes'):
+                        # YOLO8 原生格式
+                        for i, img in enumerate(images):
+                            # 過濾該批次的預測
+                            img_boxes = []
+                            img_scores = []
+                            img_labels = []
+                            
+                            # 提取當前圖像的檢測結果
+                            for j, box in enumerate(outputs.boxes):
+                                # 檢查是否屬於當前圖像
+                                if box.batch_idx.item() == i:
+                                    img_boxes.append(box.xyxy[0].cpu().numpy())
+                                    img_scores.append(box.conf.item())
+                                    img_labels.append(int(box.cls.item()))
+                            
+                            # 添加到收集列表
+                            all_pred_boxes.append(np.array(img_boxes))
+                            all_pred_scores.append(np.array(img_scores))
+                            all_pred_labels.append(np.array(img_labels))
+                            
+                            # 提取真實標籤
+                            target = targets[i]
+                            all_gt_boxes.append(target['boxes'].cpu().numpy())
+                            all_gt_labels.append(target['labels'].cpu().numpy())
+                    else:
+                        # 處理其他格式的輸出
+                        for batch_idx, output in enumerate(outputs):
+                            # 提取預測
+                            if isinstance(output, list) or isinstance(output, tuple):
+                                if len(output) >= 3:  # [boxes, scores, labels]
+                                    boxes = output[0]
+                                    scores = output[1]
+                                    labels = output[2]
+                                    
+                                    all_pred_boxes.append(boxes.cpu().numpy())
+                                    all_pred_scores.append(scores.cpu().numpy())
+                                    all_pred_labels.append(labels.cpu().numpy())
+                                else:
+                                    # 不完整的輸出，添加空數組
+                                    all_pred_boxes.append(np.array([]))
+                                    all_pred_scores.append(np.array([]))
+                                    all_pred_labels.append(np.array([]))
+                            else:
+                                # 不支持的輸出格式，添加空數組
+                                all_pred_boxes.append(np.array([]))
+                                all_pred_scores.append(np.array([]))
+                                all_pred_labels.append(np.array([]))
+                            
+                            # 提取真實標籤
+                            target = targets[batch_idx]
+                            all_gt_boxes.append(target['boxes'].cpu().numpy())
+                            all_gt_labels.append(target['labels'].cpu().numpy())
+            
+            # 計算評估指標
+            metrics = calculate_map(
+                all_pred_boxes, all_pred_labels, all_pred_scores,
+                all_gt_boxes, all_gt_labels
+            )
+            
+            # 更新指標歷史
+            metrics_history['mAP'].append(metrics['mAP'])
+            metrics_history['precision'].append(metrics['precision'])
+            metrics_history['recall'].append(metrics['recall'])
+            
+            # 記錄結果
+            logger.info(f"Epoch {epoch+1}/{epochs}")
+            logger.info(f"  訓練損失: {avg_train_loss:.4f}")
+            logger.info(f"  驗證損失: {avg_val_loss:.4f}")
+            logger.info(f"  mAP: {metrics['mAP']:.4f}")
+            logger.info(f"  精確率: {metrics['precision']:.4f}")
+            logger.info(f"  召回率: {metrics['recall']:.4f}")
+            
+            # 儲存最佳模型
+            if metrics['mAP'] > best_metrics['mAP']:
+                best_metrics = metrics
+                best_epoch = epoch + 1
+                best_model_path = weights_dir / f"{model_type}_best.pt"
+                torch.save(model.state_dict(), best_model_path)
+                logger.info(f"發現更好的模型 (mAP: {best_metrics['mAP']:.4f})，已儲存至: {best_model_path}")
+            
+            # 儲存當前檢查點
+            checkpoint_path = weights_dir / f"{model_type}_epoch_{epoch+1}.pt"
+            torch.save(model.state_dict(), checkpoint_path)
+    
+    # 計算總訓練時間
+    total_time = total_timer.stop().format_time()
+    logger.info(f"訓練完成，總耗時: {total_time}")
+    logger.info(f"最佳mAP: {best_metrics['mAP']:.4f} (Epoch {best_epoch})")
+    
+    # 繪製訓練指標圖表
+    plot_training_metrics(
+        metrics_history,
+        output_path=charts_dir / f"{model_type}_training_metrics.png"
+    )
+    
+    # 載入最佳模型
+    best_model_path = weights_dir / f"{model_type}_best.pt"
+    if os.path.exists(best_model_path):
+        model.load_state_dict(torch.load(best_model_path))
+        logger.info(f"已載入最佳模型: {best_model_path}")
+    
+    return model, best_metrics
+
+def train(config, teacher_model=None, student_model=None, use_distillation=True, train_teacher_first=False):
     """訓練PCB缺陷檢測模型
     
     參數:
@@ -66,6 +330,7 @@ def train(config, teacher_model=None, student_model=None, use_distillation=True)
         teacher_model: 教師模型(如果使用知識蒸餾)
         student_model: 學生模型
         use_distillation: 是否使用知識蒸餾
+        train_teacher_first: 是否先訓練教師模型
         
     回傳:
         model: 訓練後的模型
@@ -97,34 +362,38 @@ def train(config, teacher_model=None, student_model=None, use_distillation=True)
         logger.info("初始化教師模型...")
         teacher_model = get_teacher_model(config)
     
+    # 如果需要先訓練教師模型
+    if train_teacher_first and use_distillation:
+        logger.info("開始訓練教師模型...")
+        # 調整教師模型訓練的參數
+        teacher_config = config.copy()
+        teacher_config['epochs'] = config.get('teacher_epochs', config.get('epochs', 100))
+        teacher_config['learning_rate'] = config.get('teacher_learning_rate', config.get('learning_rate', 1e-4))
+        
+        # 訓練教師模型
+        teacher_model, teacher_metrics = train_model(
+            model=teacher_model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            config=teacher_config,
+            model_type="teacher"
+        )
+        
+        logger.info(f"教師模型訓練完成，最佳mAP: {teacher_metrics['mAP']:.4f}")
+        
+        # 儲存教師模型
+        teacher_path = weights_dir / "teacher_final.pt"
+        torch.save(teacher_model.state_dict(), teacher_path)
+        logger.info(f"教師模型已儲存至: {teacher_path}")
+    
     # 將模型移到設備上
     student_model = student_model.to(device)
     if use_distillation:
         teacher_model = teacher_model.to(device)
     
-    # 訓練參數
-    epochs = config.get('epochs', 100)
-    learning_rate = config.get('learning_rate', 1e-4)
-    weight_decay = config.get('weight_decay', 1e-5)
-    
-    # 設置優化器
-    optimizer = torch.optim.AdamW(
-        student_model.parameters(),
-        lr=learning_rate,
-        weight_decay=weight_decay
-    )
-    
-    # 設置學習率調度器
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=epochs,
-        eta_min=config.get('min_lr', 1e-6)
-    )
-    
-    # 創建損失函數
+    # 進行學生模型訓練（使用知識蒸餾或標準訓練）
     if use_distillation:
-        logger.info("使用知識蒸餾訓練...")
-        distill_losses = get_distillation_losses(config)
+        logger.info("使用知識蒸餾訓練學生模型...")
         student_model, best_metrics = train_with_distillation(
             teacher_model=teacher_model,
             student_model=student_model,
@@ -133,165 +402,14 @@ def train(config, teacher_model=None, student_model=None, use_distillation=True)
             config=config
         )
     else:
-        logger.info("使用標準訓練(無知識蒸餾)...")
-        # 自定義訓練循環(無知識蒸餾)
-        best_metrics = {'mAP': 0, 'precision': 0, 'recall': 0}
-        metrics_history = {
-            'train_loss': [],
-            'val_loss': [],
-            'mAP': [],
-            'precision': [],
-            'recall': []
-        }
-        
-        total_timer = Timer().start()
-        best_epoch = 0
-        
-        for epoch in range(epochs):
-            # 訓練一個周期
-            student_model.train()
-            epoch_loss = 0
-            
-            with tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}") as pbar:
-                for images, targets in pbar:
-                    # 將資料移到設備上
-                    images = images.to(device)
-                    for t in targets:
-                        for k, v in t.items():
-                            if isinstance(v, torch.Tensor):
-                                t[k] = v.to(device)
-                    
-                    # 清除梯度
-                    optimizer.zero_grad()
-                    
-                    # 前向傳播
-                    outputs = student_model(images)
-                    
-                    # 計算損失
-                    loss_dict = student_model.model.model.loss(outputs, targets)
-                    loss = sum(loss_dict.values())
-                    
-                    # 反向傳播
-                    loss.backward()
-                    optimizer.step()
-                    
-                    # 更新進度條
-                    epoch_loss += loss.item()
-                    pbar.set_postfix({'loss': loss.item()})
-            
-            # 更新學習率
-            scheduler.step()
-            
-            # 計算平均訓練損失
-            avg_train_loss = epoch_loss / len(train_loader)
-            metrics_history['train_loss'].append(avg_train_loss)
-            
-            # 定期評估
-            if (epoch + 1) % config.get('eval_interval', 5) == 0 or epoch == epochs - 1:
-                # 評估模型
-                student_model.eval()
-                val_loss = 0
-                
-                with torch.no_grad():
-                    for images, targets in tqdm(val_loader, desc="Validation"):
-                        # 將資料移到設備上
-                        images = images.to(device)
-                        for t in targets:
-                            for k, v in t.items():
-                                if isinstance(v, torch.Tensor):
-                                    t[k] = v.to(device)
-                        
-                        # 前向傳播
-                        outputs = student_model(images)
-                        
-                        # 計算損失
-                        loss_dict = student_model.model.model.loss(outputs, targets)
-                        loss = sum(loss_dict.values())
-                        val_loss += loss.item()
-                
-                # 計算平均驗證損失
-                avg_val_loss = val_loss / len(val_loader)
-                metrics_history['val_loss'].append(avg_val_loss)
-                
-                # 計算mAP等評估指標
-                from utils.utils import calculate_map
-                
-                # 收集預測和真實標籤
-                all_pred_boxes = []
-                all_pred_labels = []
-                all_pred_scores = []
-                all_gt_boxes = []
-                all_gt_labels = []
-                
-                with torch.no_grad():
-                    for images, targets in tqdm(val_loader, desc="Collecting predictions"):
-                        images = images.to(device)
-                        # 獲取預測
-                        outputs = student_model(images)
-                        
-                        # 處理預測結果
-                        for batch_idx, output in enumerate(outputs):
-                            # 提取預測
-                            boxes = output[0]  # [n, 4]
-                            scores = output[1]  # [n]
-                            labels = output[2]  # [n]
-                            
-                            all_pred_boxes.append(boxes.cpu().numpy())
-                            all_pred_scores.append(scores.cpu().numpy())
-                            all_pred_labels.append(labels.cpu().numpy())
-                            
-                            # 提取真實標籤
-                            target = targets[batch_idx]
-                            all_gt_boxes.append(target['boxes'].cpu().numpy())
-                            all_gt_labels.append(target['labels'].cpu().numpy())
-                
-                # 計算評估指標
-                metrics = calculate_map(
-                    all_pred_boxes, all_pred_labels, all_pred_scores,
-                    all_gt_boxes, all_gt_labels
-                )
-                
-                # 更新指標歷史
-                metrics_history['mAP'].append(metrics['mAP'])
-                metrics_history['precision'].append(metrics['precision'])
-                metrics_history['recall'].append(metrics['recall'])
-                
-                # 記錄結果
-                logger.info(f"Epoch {epoch+1}/{epochs}")
-                logger.info(f"  訓練損失: {avg_train_loss:.4f}")
-                logger.info(f"  驗證損失: {avg_val_loss:.4f}")
-                logger.info(f"  mAP: {metrics['mAP']:.4f}")
-                logger.info(f"  精確率: {metrics['precision']:.4f}")
-                logger.info(f"  召回率: {metrics['recall']:.4f}")
-                
-                # 儲存最佳模型
-                if metrics['mAP'] > best_metrics['mAP']:
-                    best_metrics = metrics
-                    best_epoch = epoch + 1
-                    best_model_path = weights_dir / "student_best.pt"
-                    torch.save(student_model.state_dict(), best_model_path)
-                    logger.info(f"發現更好的模型 (mAP: {best_metrics['mAP']:.4f})，已儲存至: {best_model_path}")
-                
-                # 儲存當前檢查點
-                checkpoint_path = weights_dir / f"student_epoch_{epoch+1}.pt"
-                torch.save(student_model.state_dict(), checkpoint_path)
-        
-        # 計算總訓練時間
-        total_time = total_timer.stop().format_time()
-        logger.info(f"訓練完成，總耗時: {total_time}")
-        logger.info(f"最佳mAP: {best_metrics['mAP']:.4f} (Epoch {best_epoch})")
-        
-        # 繪製訓練指標圖表
-        plot_training_metrics(
-            metrics_history,
-            output_path=charts_dir / "training_metrics.png"
+        logger.info("使用標準訓練學生模型(無知識蒸餾)...")
+        student_model, best_metrics = train_model(
+            model=student_model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            config=config,
+            model_type="student"
         )
-        
-        # 載入最佳模型
-        best_model_path = weights_dir / "student_best.pt"
-        if os.path.exists(best_model_path):
-            student_model.load_state_dict(torch.load(best_model_path))
-            logger.info(f"已載入最佳模型: {best_model_path}")
     
     return student_model, best_metrics
 
@@ -329,21 +447,48 @@ def evaluate(model, config):
             # 獲取預測
             outputs = model(images)
             
-            # 處理預測結果
-            for batch_idx, output in enumerate(outputs):
-                # 提取預測
-                boxes = output[0]  # [n, 4]
-                scores = output[1]  # [n]
-                labels = output[2]  # [n]
-                
-                all_pred_boxes.append(boxes.cpu().numpy())
-                all_pred_scores.append(scores.cpu().numpy())
-                all_pred_labels.append(labels.cpu().numpy())
-                
-                # 提取真實標籤
-                target = targets[batch_idx]
-                all_gt_boxes.append(target['boxes'].cpu().numpy())
-                all_gt_labels.append(target['labels'].cpu().numpy())
+            # 處理預測結果 (根據模型輸出格式調整)
+            if hasattr(outputs, 'boxes'):
+                # YOLO8 原生格式
+                for i, img in enumerate(images):
+                    # 過濾該批次的預測
+                    img_boxes = []
+                    img_scores = []
+                    img_labels = []
+                    
+                    # 提取當前圖像的檢測結果
+                    for j, box in enumerate(outputs.boxes):
+                        # 檢查是否屬於當前圖像
+                        if box.batch_idx.item() == i:
+                            img_boxes.append(box.xyxy[0].cpu().numpy())
+                            img_scores.append(box.conf.item())
+                            img_labels.append(int(box.cls.item()))
+                    
+                    # 添加到收集列表
+                    all_pred_boxes.append(np.array(img_boxes))
+                    all_pred_scores.append(np.array(img_scores))
+                    all_pred_labels.append(np.array(img_labels))
+                    
+                    # 提取真實標籤
+                    target = targets[i]
+                    all_gt_boxes.append(target['boxes'].cpu().numpy())
+                    all_gt_labels.append(target['labels'].cpu().numpy())
+            else:
+                # 處理其他格式的輸出
+                for batch_idx, output in enumerate(outputs):
+                    # 提取預測
+                    boxes = output[0] if isinstance(output, (list, tuple)) and len(output) > 0 else []
+                    scores = output[1] if isinstance(output, (list, tuple)) and len(output) > 1 else []
+                    labels = output[2] if isinstance(output, (list, tuple)) and len(output) > 2 else []
+                    
+                    all_pred_boxes.append(boxes.cpu().numpy() if isinstance(boxes, torch.Tensor) else np.array([]))
+                    all_pred_scores.append(scores.cpu().numpy() if isinstance(scores, torch.Tensor) else np.array([]))
+                    all_pred_labels.append(labels.cpu().numpy() if isinstance(labels, torch.Tensor) else np.array([]))
+                    
+                    # 提取真實標籤
+                    target = targets[batch_idx]
+                    all_gt_boxes.append(target['boxes'].cpu().numpy())
+                    all_gt_labels.append(target['labels'].cpu().numpy())
     
     # 計算評估指標
     from utils.utils import calculate_map
@@ -425,17 +570,12 @@ def main():
             
     else:
         # 訓練模型
-        # 添加特殊處理，防止使用YOLO的train方法
-        if hasattr(teacher_model, 'model'):
-            teacher_model.model.use_custom_train = True
-        if hasattr(student_model, 'model'):
-            student_model.model.use_custom_train = True
-
         trained_model, best_metrics = train(
             config=config,
             teacher_model=teacher_model,
             student_model=student_model,
-            use_distillation=not args.no_distill
+            use_distillation=not args.no_distill,
+            train_teacher_first=args.train_teacher
         )
         
         # 如果需要優化模型
