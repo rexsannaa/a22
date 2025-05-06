@@ -750,18 +750,30 @@ def get_teacher_model(config):
             logger.info(f"載入已訓練的教師模型: {best_teacher_path}")
             model = YOLO(str(best_teacher_path))
         else:
-            # 從頭開始初始化模型，而不是使用COCO預訓練權重
+            # 從頭開始初始化模型，嘗試使用內建的模型架構，但不載入權重
             logger.info("初始化新的教師模型，將在PCB數據集上訓練")
-            model = YOLO('yolov8l.yaml')  # 只載入模型結構，不載入權重
+            # 創建空白模型配置
+            model_config = {
+                'task': 'detect',
+                'nc': len(DEFECT_CLASSES),
+                'names': list(DEFECT_CLASSES.keys())
+            }
             
-            # 手動設定模型類別數量
-            model.model.model.nc = len(DEFECT_CLASSES)
-            model.names = {i: name for name, i in DEFECT_CLASSES.items()}
+            # 使用 'build' 方法創建模型
+            model = YOLO('yolov8l.yaml')
+            
+            # 修改模型配置
+            model.args.update(model_config)
+            
+            logger.info("成功初始化教師模型")
         
         logger.info(f"教師模型已設置為{len(DEFECT_CLASSES)}個PCB缺陷類別")
         return model
     except Exception as e:
         logger.error(f"載入教師模型失敗: {e}")
+        # 添加詳細的錯誤信息
+        import traceback
+        logger.error(f"錯誤詳情: {traceback.format_exc()}")
         sys.exit(1)
 
 def get_student_model(config):
