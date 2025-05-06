@@ -2,8 +2,7 @@
 # -*- coding:utf-8 -*-
 """
 optimize.py - PCB缺陷檢測模型優化模組
-本模組整合了模型優化、部署相關功能，
-提供一站式模型輕量化與效能提升解決方案。
+本模組整合了模型優化、部署相關功能，提供一站式模型輕量化與效能提升解決方案。
 主要特點:
 1. 模型剪枝：通過結構化和非結構化剪枝減少模型參數
 2. 模型量化：支援INT8/FP16量化以加速推理
@@ -17,40 +16,31 @@ import torch
 import torch.nn as nn
 import torch.nn.utils.prune as prune
 import numpy as np
-from pathlib import Path
-import onnx
 import copy
 import time
+import zipfile
+from pathlib import Path
 from tqdm import tqdm
 
 # 設定日誌
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 class ModelOptimizer:
     """PCB缺陷檢測模型優化器"""
     
     def __init__(self, model, config=None):
-        """
-        初始化模型優化器
-        
-        參數:
-            model: 原始模型
-            config: 優化配置字典
-        """
+        """初始化模型優化器"""
         self.model = model
         self.config = config or {}
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.optimized_model = None
         
-        # 優化相關參數
-        self.prune_amount = self.config.get('prune_amount', 0.3)  # 剪枝比例(預設30%)
-        self.prune_method = self.config.get('prune_method', 'l1')  # 剪枝方法
-        self.quant_type = self.config.get('quant_type', 'static')  # 量化類型
-        self.export_format = self.config.get('export_format', 'onnx')  # 導出格式
+        # 優化參數
+        self.prune_amount = self.config.get('prune_amount', 0.3)
+        self.prune_method = self.config.get('prune_method', 'l1')
+        self.quant_type = self.config.get('quant_type', 'static')
+        self.export_format = self.config.get('export_format', 'onnx')
         
         # 初始化模型
         self.model.to(self.device)
@@ -62,197 +52,121 @@ class ModelOptimizer:
         """應用模型剪枝"""
         logger.info(f"開始應用{self.prune_method}剪枝，剪枝比例: {self.prune_amount}")
         
-        # 複製模型以保留原始版本
         pruned_model = copy.deepcopy(self.model)
-        
-        # 剪枝計數器
         pruned_params = 0
         total_params = 0
         
         # 遍歷模型層
         for name, module in pruned_model.named_modules():
-            # 對卷積層和線性層應用剪枝
             if isinstance(module, (nn.Conv2d, nn.Linear)):
-                # 獲取參數數量
                 param_size = module.weight.data.numel()
                 total_params += param_size
                 
-                # 根據剪枝方法選擇剪枝函數
                 if self.prune_method == 'l1':
                     prune.l1_unstructured(module, name='weight', amount=self.prune_amount)
                 elif self.prune_method == 'random':
                     prune.random_unstructured(module, name='weight', amount=self.prune_amount)
                 elif self.prune_method == 'structured':
-                    # 對卷積層進行結構化剪枝(按輸出通道)
                     if isinstance(module, nn.Conv2d):
-                        prune.ln_structured(module, name='weight', amount=self.prune_amount, 
-                                          n=2, dim=0)  # 按輸出通道剪枝
+                        prune.ln_structured(module, name='weight', amount=self.prune_amount, n=2, dim=0)
                 
-                # 將剪枝永久化
                 prune.remove(module, 'weight')
-                
-                # 統計剪枝參數
                 pruned_params += int(param_size * self.prune_amount)
                 
-        # 保存優化後的模型
         self.optimized_model = pruned_model
-        
         logger.info(f"剪枝完成，總參數: {total_params:,}，剪枝參數: {pruned_params:,} ({pruned_params/total_params*100:.2f}%)")
         
         return self.optimized_model
     
     def apply_quantization(self, calibration_loader=None):
-        """
-        應用模型量化
-        
-        參數:
-            calibration_loader: 校準資料載入器(用於靜態量化)
-            
-        回傳:
-            quantized_model: 量化後的模型
-        """
+        """應用模型量化"""
         logger.info(f"開始應用{self.quant_type}量化")
         
-        # 使用已剪枝的模型(如果有)或原始模型
         model_to_quantize = self.optimized_model if self.optimized_model is not None else self.model
         model_to_quantize = copy.deepcopy(model_to_quantize)
         
-        # 處理不同量化類型
         if self.quant_type == 'dynamic':
-            # 動態量化(僅權重)
             try:
-                # 將模型轉換為CPU (量化需要在CPU上進行)
                 model_to_quantize.cpu()
-                
-                # 應用動態量化
                 quantized_model = torch.quantization.quantize_dynamic(
-                    model_to_quantize,  # 模型
-                    {nn.Linear, nn.Conv2d},  # 要量化的層類型
-                    dtype=torch.qint8  # 量化數據類型
+                    model_to_quantize,
+                    {nn.Linear, nn.Conv2d},
+                    dtype=torch.qint8
                 )
-                
                 logger.info("動態量化完成")
-                
             except Exception as e:
                 logger.error(f"動態量化失敗: {e}")
-                logger.info("使用替代方案：針對特定模塊進行量化")
-                
-                # 替代方案：手動量化特定模塊
                 quantized_model = model_to_quantize
-                
-                # 為模型添加量化配置
                 quantized_model.qconfig = torch.quantization.default_dynamic_qconfig
                 torch.quantization.prepare_dynamic(quantized_model, inplace=True)
                 torch.quantization.convert_dynamic(quantized_model, inplace=True)
                 
         elif self.quant_type == 'static':
-            # 靜態量化(權重和激活)
             if calibration_loader is None:
                 logger.warning("靜態量化需要校準資料載入器，切換為動態量化")
-                return self.apply_quantization()  # 回退到動態量化
+                return self.apply_quantization()
             
             try:
-                # 將模型轉換為CPU
-                model_to_quantize.cpu()
-                
-                # 定義量化配置
-                model_to_quantize.eval()
+                model_to_quantize.cpu().eval()
                 model_to_quantize.qconfig = torch.quantization.get_default_qconfig('fbgemm')
-                
-                # 執行融合(例如Conv+BN+ReLU)
-                model_to_quantize = torch.quantization.fuse_modules(model_to_quantize, 
-                                                            [['conv', 'bn', 'relu']], 
-                                                            inplace=False)
-                
-                # 準備量化
                 model_prepared = torch.quantization.prepare(model_to_quantize)
                 
-                # 校準(使用一小部分校準資料)
                 with torch.no_grad():
                     for i, (images, _) in enumerate(calibration_loader):
                         model_prepared(images)
-                        # 使用少量批次進行校準
-                        if i >= 10:
-                            break
+                        if i >= 10: break
                             
-                # 完成量化
                 quantized_model = torch.quantization.convert(model_prepared)
-                
                 logger.info("靜態量化完成")
                 
             except Exception as e:
                 logger.error(f"靜態量化失敗: {e}")
-                logger.info("回退到動態量化")
-                return self.apply_quantization()  # 回退到動態量化
+                return self.apply_quantization()
                 
-        elif self.quant_type == 'qat':
-            # 量化感知訓練(需要重新訓練)
-            logger.warning("量化感知訓練需要重新訓練模型，此功能尚未實現")
-            logger.info("使用動態量化替代")
-            return self.apply_quantization()  # 回退到動態量化
-        
         else:
-            logger.error(f"不支援的量化類型: {self.quant_type}")
-            return model_to_quantize
+            logger.warning(f"不支援的量化類型: {self.quant_type}，使用動態量化")
+            return self.apply_quantization()
         
-        # 保存優化後的模型
         self.optimized_model = quantized_model
-        
         return self.optimized_model
     
     def export_model(self, output_path=None, input_shape=(1, 3, 640, 640)):
-        """
-        將模型導出為不同格式
-        
-        參數:
-            output_path: 輸出路徑
-            input_shape: 輸入形狀
-            
-        回傳:
-            output_path: 導出模型的路徑
-        """
-        # 使用已優化的模型(如果有)或原始模型
+        """將模型導出為不同格式"""
         model_to_export = self.optimized_model if self.optimized_model is not None else self.model
         model_to_export = copy.deepcopy(model_to_export)
         
-        # 確定輸出路徑
         if output_path is None:
             output_dir = self.config.get('output_dir', 'outputs/weights')
             os.makedirs(output_dir, exist_ok=True)
             model_name = self.config.get('model_name', 'pcb_model')
             output_path = os.path.join(output_dir, f"{model_name}.{self.export_format}")
         
-        # 根據不同格式進行導出
         if self.export_format == 'onnx':
             logger.info(f"導出模型為ONNX格式: {output_path}")
             
             try:
-                # 創建示例輸入
                 dummy_input = torch.randn(input_shape).to(self.device)
-                
-                # 確保模型處於評估模式
                 model_to_export.eval()
                 
-                # 導出為ONNX
                 torch.onnx.export(
-                    model_to_export,               # 模型
-                    dummy_input,                   # 示例輸入
-                    output_path,                   # 輸出路徑
-                    export_params=True,            # 存儲訓練好的參數權重
-                    opset_version=12,              # ONNX版本
-                    do_constant_folding=True,      # 是否執行常量折疊優化
-                    input_names=['input'],         # 輸入節點名稱
-                    output_names=['output'],       # 輸出節點名稱
-                    dynamic_axes={                 # 動態軸(支援不同批次大小)
+                    model_to_export,
+                    dummy_input,
+                    output_path,
+                    export_params=True,
+                    opset_version=12,
+                    do_constant_folding=True,
+                    input_names=['input'],
+                    output_names=['output'],
+                    dynamic_axes={
                         'input': {0: 'batch_size'},
                         'output': {0: 'batch_size'}
                     }
                 )
                 
                 # 驗證ONNX模型
+                import onnx
                 onnx_model = onnx.load(output_path)
                 onnx.checker.check_model(onnx_model)
-                
                 logger.info(f"ONNX模型已成功導出並驗證: {output_path}")
                 
             except Exception as e:
@@ -262,30 +176,16 @@ class ModelOptimizer:
             logger.info(f"導出模型為TorchScript格式: {output_path}")
             
             try:
-                # 創建示例輸入
                 dummy_input = torch.randn(input_shape).to(self.device)
-                
-                # 確保模型處於評估模式
                 model_to_export.eval()
                 
-                # 追蹤並導出
                 traced_model = torch.jit.trace(model_to_export, dummy_input)
                 traced_model.save(output_path)
-                
                 logger.info(f"TorchScript模型已成功導出: {output_path}")
                 
             except Exception as e:
                 logger.error(f"TorchScript導出失敗: {e}")
                 
-        elif self.export_format == 'tensorrt':
-            logger.warning("TensorRT導出需要額外的依賴，此功能尚未實現")
-            logger.info("請先導出為ONNX，然後使用TensorRT工具轉換")
-            
-            # 修改為ONNX格式
-            self.export_format = 'onnx'
-            output_path = output_path.replace('.tensorrt', '.onnx')
-            return self.export_model(output_path, input_shape)
-            
         else:
             logger.error(f"不支援的導出格式: {self.export_format}")
             return None
@@ -293,24 +193,13 @@ class ModelOptimizer:
         return output_path
     
     def profile_model(self, input_shape=(1, 3, 640, 640), num_runs=100):
-        """
-        分析模型性能
-        
-        參數:
-            input_shape: 輸入形狀
-            num_runs: 測試運行次數
-            
-        回傳:
-            profile_results: 性能分析結果
-        """
+        """分析模型性能"""
         logger.info(f"開始分析模型性能，運行次數: {num_runs}")
         
-        # 使用已優化的模型(如果有)或原始模型
         model_to_profile = self.optimized_model if self.optimized_model is not None else self.model
         model_to_profile = model_to_profile.to(self.device)
         model_to_profile.eval()
         
-        # 創建示例輸入
         dummy_input = torch.randn(input_shape).to(self.device)
         
         # 熱身運行
@@ -323,17 +212,12 @@ class ModelOptimizer:
         
         with torch.no_grad():
             for _ in tqdm(range(num_runs), desc="性能分析"):
-                # 開始計時
                 start_time = time.time()
-                
-                # 前向傳播
                 _ = model_to_profile(dummy_input)
                 
-                # 同步GPU
                 if self.device.type == 'cuda':
                     torch.cuda.synchronize()
                     
-                # 記錄時間
                 inference_times.append(time.time() - start_time)
         
         # 計算統計數據
@@ -341,20 +225,18 @@ class ModelOptimizer:
         std_time = np.std(inference_times)
         min_time = np.min(inference_times)
         max_time = np.max(inference_times)
-        
-        # 計算推理速度(FPS)
         fps = 1.0 / avg_time
         
         # 計算模型參數量
         total_params = sum(p.numel() for p in model_to_profile.parameters())
-        total_params_m = total_params / 1e6  # 轉換為百萬
+        total_params_m = total_params / 1e6
         
         # 嘗試計算MACs
         try:
             from thop import profile as thop_profile
             macs, _ = thop_profile(model_to_profile, inputs=(dummy_input,))
-            macs_g = macs / 1e9  # 轉換為十億
-            memory_mb = (macs * 4) / (1024 * 1024)  # 估算最大內存佔用(以MB為單位)
+            macs_g = macs / 1e9
+            memory_mb = (macs * 4) / (1024 * 1024)
         except ImportError:
             logger.warning("無法計算MACs，請安裝thop套件")
             macs_g = "N/A"
@@ -373,7 +255,6 @@ class ModelOptimizer:
             'memory_mb': memory_mb
         }
         
-        # 輸出結果
         logger.info(f"性能分析結果:")
         logger.info(f"  平均推理時間: {avg_time*1000:.2f} ms")
         logger.info(f"  推理速度: {fps:.2f} FPS")
@@ -384,24 +265,12 @@ class ModelOptimizer:
         return profile_results
     
     def optimize(self, calibration_loader=None, apply_pruning=True, apply_quantization=True):
-        """
-        一站式優化模型
-        
-        參數:
-            calibration_loader: 校準資料載入器(用於靜態量化)
-            apply_pruning: 是否應用剪枝
-            apply_quantization: 是否應用量化
-            
-        回傳:
-            optimized_model: 優化後的模型
-        """
+        """一站式優化模型"""
         logger.info("開始一站式模型優化")
         
-        # 應用剪枝
         if apply_pruning:
             self.apply_pruning()
         
-        # 應用量化
         if apply_quantization:
             self.apply_quantization(calibration_loader)
         
@@ -418,7 +287,6 @@ class YOLOOptimizer(ModelOptimizer):
         """針對YOLO架構的特定剪枝策略"""
         logger.info(f"應用YOLO特定剪枝策略")
         
-        # 複製模型以保留原始版本
         pruned_model = copy.deepcopy(self.model)
         
         # 檢測頭通常需要保留完整性，所以我們對其進行特殊處理
@@ -436,71 +304,47 @@ class YOLOOptimizer(ModelOptimizer):
         backbone_prune_amount = self.prune_amount
         head_prune_amount = self.prune_amount * 0.5  # 對檢測頭應用較溫和的剪枝
         
-        # 剪枝計數器
         pruned_params = 0
         total_params = 0
         
         # 對主幹網絡應用剪枝
         for name, module in backbone_modules:
             if isinstance(module, (nn.Conv2d, nn.Linear)):
-                # 獲取參數數量
                 param_size = module.weight.data.numel()
                 total_params += param_size
                 
-                # 應用剪枝
                 if self.prune_method == 'l1':
                     prune.l1_unstructured(module, name='weight', amount=backbone_prune_amount)
                 elif self.prune_method == 'random':
                     prune.random_unstructured(module, name='weight', amount=backbone_prune_amount)
                 elif self.prune_method == 'structured':
-                    # 對卷積層進行結構化剪枝
                     if isinstance(module, nn.Conv2d):
-                        prune.ln_structured(module, name='weight', amount=backbone_prune_amount, 
-                                          n=2, dim=0)
+                        prune.ln_structured(module, name='weight', amount=backbone_prune_amount, n=2, dim=0)
                 
-                # 將剪枝永久化
                 prune.remove(module, 'weight')
-                
-                # 統計剪枝參數
                 pruned_params += int(param_size * backbone_prune_amount)
         
         # 對檢測頭應用溫和剪枝
         for name, module in detection_heads:
             if isinstance(module, (nn.Conv2d, nn.Linear)):
-                # 獲取參數數量
                 param_size = module.weight.data.numel()
                 total_params += param_size
                 
-                # 應用溫和剪枝
                 if self.prune_method == 'l1':
                     prune.l1_unstructured(module, name='weight', amount=head_prune_amount)
                 elif self.prune_method == 'random':
                     prune.random_unstructured(module, name='weight', amount=head_prune_amount)
                 
-                # 將剪枝永久化
                 prune.remove(module, 'weight')
-                
-                # 統計剪枝參數
                 pruned_params += int(param_size * head_prune_amount)
         
-        # 保存優化後的模型
         self.optimized_model = pruned_model
-        
         logger.info(f"YOLO剪枝完成，總參數: {total_params:,}，剪枝參數: {pruned_params:,} ({pruned_params/total_params*100:.2f}%)")
         
         return self.optimized_model
 
 def optimize_model(model, config):
-    """
-    優化模型的便捷函數
-    
-    參數:
-        model: 原始模型
-        config: 優化配置字典
-        
-    回傳:
-        optimized_model: 優化後的模型
-    """
+    """優化模型的便捷函數"""
     # 識別模型類型
     model_type = config.get('model_type', 'generic')
     
@@ -513,8 +357,6 @@ def optimize_model(model, config):
     # 執行優化
     apply_pruning = config.get('apply_pruning', True)
     apply_quantization = config.get('apply_quantization', True)
-    
-    # 獲取校準載入器(如果有的話)
     calibration_loader = config.get('calibration_loader', None)
     
     # 一站式優化
@@ -537,19 +379,8 @@ def optimize_model(model, config):
     return optimized_model
 
 def create_deploy_package(model_path, config_path, output_dir=None):
-    """
-    創建部署包
-    
-    參數:
-        model_path: 模型路徑
-        config_path: 配置文件路徑
-        output_dir: 輸出目錄
-        
-    回傳:
-        package_path: 部署包路徑
-    """
+    """創建部署包"""
     import shutil
-    import zipfile
     
     # 確定輸出目錄
     if output_dir is None:
@@ -684,46 +515,50 @@ if __name__ == "__main__":
     parser.add_argument('--profile', action='store_true', help='分析模型性能')
     args = parser.parse_args()
     
-    # 載入配置
-    from utils.utils import load_config
-    config = load_config(args.config)
-    
-    # 增加命令行參數到配置
-    config['apply_pruning'] = args.prune
-    config['apply_quantization'] = args.quantize
-    config['export_model'] = args.export is not None
-    config['export_format'] = args.export
-    config['profile_model'] = args.profile
-    config['output_dir'] = args.output
-    
-    # 載入模型
-    if args.model.endswith('.pt'):
-        model = torch.load(args.model, map_location='cpu')
-    else:
-        # 如果是YOLO模型
-        try:
-            from models.model import load_model
-            model = load_model(args.model)
-        except ImportError:
-            logger.error("無法載入模型，請確認模型路徑和格式")
-            exit(1)
-    
-    # 優化模型
-    optimizer = YOLOOptimizer(model, config) if 'yolo' in config.get('model_type', '').lower() else ModelOptimizer(model, config)
-    
-    if args.prune:
-        optimizer.apply_pruning()
-        logger.info("剪枝完成")
-    
-    if args.quantize:
-        optimizer.apply_quantization()
-        logger.info("量化完成")
-    
-    if args.export:
-        output_path = optimizer.export_model()
-        logger.info(f"模型已導出至 {output_path}")
-    
-    if args.profile:
-        profile_results = optimizer.profile_model()
+    try:
+        # 載入配置
+        import yaml
+        with open(args.config, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
         
-    logger.info("模型優化完成")
+        # 增加命令行參數到配置
+        config['apply_pruning'] = args.prune
+        config['apply_quantization'] = args.quantize
+        config['export_model'] = args.export is not None
+        config['export_format'] = args.export
+        config['profile_model'] = args.profile
+        config['output_dir'] = args.output
+        
+        # 載入模型
+        if args.model.endswith('.pt'):
+            model = torch.load(args.model, map_location='cpu')
+        else:
+            # 如果是YOLO模型
+            try:
+                from ultralytics import YOLO
+                model = YOLO(args.model)
+            except ImportError:
+                logger.error("無法載入模型，請確認模型路徑和格式")
+                exit(1)
+        
+        # 優化模型
+        optimizer = YOLOOptimizer(model, config) if 'yolo' in config.get('model_type', '').lower() else ModelOptimizer(model, config)
+        
+        if args.prune:
+            optimizer.apply_pruning()
+            logger.info("剪枝完成")
+        
+        if args.quantize:
+            optimizer.apply_quantization()
+            logger.info("量化完成")
+        
+        if args.export:
+            output_path = optimizer.export_model()
+            logger.info(f"模型已導出至 {output_path}")
+        
+        if args.profile:
+            profile_results = optimizer.profile_model()
+            
+        logger.info("模型優化完成")
+    except Exception as e:
+        logger.error(f"模型優化過程發生錯誤: {e}")
