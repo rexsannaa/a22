@@ -5,9 +5,9 @@ eval.py - PCB缺陷檢測評估主程式
 本模組整合了PCB缺陷檢測模型評估功能，提供全面的性能評估工具。
 主要特點:
 1. 整合評估指標計算：mAP、精確率、召回率等綜合評估
-2. 支援多模型比較：可同時評估與比較多個模型性能
+2. 支援多模型比較：可同時評估與比較教師與學生模型性能
 3. 提供視覺化輸出：檢測結果視覺化與性能對比圖表
-4. 支援批次評估與單圖評估：滿足不同評估需求
+4. 一體化評估工具：整合指標計算與輸出為單一模組
 """
 
 import os
@@ -19,14 +19,11 @@ import cv2
 import numpy as np
 from pathlib import Path
 import time
-from tqdm import tqdm
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 # 設定日誌
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # PCB缺陷類別
@@ -53,30 +50,19 @@ DEFECT_COLORS = {
 def parse_args():
     """解析命令行參數"""
     parser = argparse.ArgumentParser(description='PCB缺陷檢測評估')
-    parser.add_argument('--config', type=str, default='config/config.yaml',
-                        help='配置文件路徑')
-    parser.add_argument('--model', type=str, required=True,
-                        help='模型路徑')
-    parser.add_argument('--model-type', type=str, default='student',
-                        help='模型類型 (teacher/student)')
-    parser.add_argument('--compare', type=str, default=None,
-                        help='比較模型路徑，逗號分隔多個模型')
-    parser.add_argument('--dataset', type=str, default=None,
-                        help='資料集路徑，覆蓋配置文件中的設定')
-    parser.add_argument('--image', type=str, default=None,
-                        help='單張圖像評估模式，指定圖像路徑')
-    parser.add_argument('--output-dir', type=str, default=None,
-                        help='輸出目錄，覆蓋配置文件中的設定')
-    parser.add_argument('--conf-threshold', type=float, default=0.25,
-                        help='檢測置信度閾值')
-    parser.add_argument('--iou-threshold', type=float, default=0.5,
-                        help='NMS和mAP計算的IoU閾值')
-    parser.add_argument('--show-image', action='store_true',
-                        help='顯示檢測結果圖像')
-    parser.add_argument('--save-image', action='store_true',
-                        help='儲存檢測結果圖像')
-    parser.add_argument('--benchmark', action='store_true',
-                        help='執行性能基準測試')
+    parser.add_argument('--config', type=str, default='config/config.yaml', help='配置文件路徑')
+    parser.add_argument('--model', type=str, required=True, help='模型路徑')
+    parser.add_argument('--model-type', type=str, default='student', choices=['teacher', 'student'], help='模型類型')
+    parser.add_argument('--compare', type=str, default=None, help='比較模型路徑，逗號分隔多個模型')
+    parser.add_argument('--dataset', type=str, default=None, help='資料集路徑，覆蓋配置文件中的設定')
+    parser.add_argument('--image', type=str, default=None, help='單張圖像評估模式，指定圖像路徑')
+    parser.add_argument('--output-dir', type=str, default=None, help='輸出目錄，覆蓋配置文件中的設定')
+    parser.add_argument('--conf-threshold', type=float, default=0.25, help='檢測置信度閾值')
+    parser.add_argument('--iou-threshold', type=float, default=0.5, help='NMS和mAP計算的IoU閾值')
+    parser.add_argument('--show-image', action='store_true', help='顯示檢測結果圖像')
+    parser.add_argument('--save-image', action='store_true', help='儲存檢測結果圖像')
+    parser.add_argument('--benchmark', action='store_true', help='執行性能基準測試')
+    parser.add_argument('--export', type=str, default=None, choices=['onnx', 'tflite'], help='導出模型格式')
     return parser.parse_args()
 
 def load_config(config_path):
@@ -90,28 +76,35 @@ def load_config(config_path):
         logger.error(f"載入配置檔案失敗: {e}")
         return {}
 
-def load_model(model_path, model_type='student'):
+def load_model(model_path, model_type='student', device='cuda'):
     """載入模型"""
-    logger.info(f"載入模型: {model_path}")
+    logger.info(f"載入{model_type}模型: {model_path}")
     try:
-        # 嘗試直接載入PyTorch模型
-        if model_path.endswith('.pt') or model_path.endswith('.pth'):
-            model = torch.load(model_path, map_location='cpu')
-        else:
-            # 嘗試載入YOLO格式模型
-            try:
-                from ultralytics import YOLO
-                model = YOLO(model_path)
-                logger.info(f"已載入YOLO模型: {model_path}")
-                return model
-            except:
-                logger.error(f"無法載入YOLO模型，嘗試載入自定義模型")
-                # 導入自定義模型載入功能
-                from models.model import load_model as custom_load_model
-                model = custom_load_model(model_path, model_type)
+        # 設定裝置
+        device = torch.device(device if torch.cuda.is_available() else 'cpu')
         
-        logger.info(f"模型載入成功")
-        return model
+        # 嘗試載入YOLO模型
+        try:
+            from ultralytics import YOLO
+            model = YOLO(model_path)
+            model.to(device)
+            
+            # 設定類別數
+            if hasattr(model, 'model') and hasattr(model.model, 'model'):
+                model.model.model.nc = len(DEFECT_CLASSES)
+                
+            logger.info(f"已載入YOLO模型: {model_path}")
+            return model
+        except Exception as e:
+            logger.warning(f"使用YOLO載入失敗: {e}，嘗試使用PyTorch載入")
+            
+            # 嘗試載入PyTorch模型
+            if model_path.endswith('.pt') or model_path.endswith('.pth'):
+                model = torch.load(model_path, map_location=device)
+                logger.info(f"已載入PyTorch模型: {model_path}")
+                return model
+            else:
+                raise ValueError(f"不支援的模型格式: {model_path}")
     except Exception as e:
         logger.error(f"載入模型失敗: {e}")
         return None
@@ -119,174 +112,231 @@ def load_model(model_path, model_type='student'):
 def get_dataloader(config):
     """獲取資料載入器"""
     try:
-        # 先嘗試從data.dataset導入
-        from data.dataset import get_dataloader as get_data
-        return get_data(config)
-    except ImportError:
-        logger.error("無法導入資料模組，嘗試內嵌實現")
-        
-        # 內嵌實現簡化版資料載入器
-        import torch
-        from torch.utils.data import Dataset, DataLoader
-        from torchvision import transforms
-        import os
-        import cv2
-        import xml.etree.ElementTree as ET
-        import random
-        
-        class SimplePCBDataset(Dataset):
-            """簡化版PCB缺陷檢測資料集"""
-            def __init__(self, root_dir, mode='val', img_size=640):
-                self.root_dir = root_dir
-                self.img_size = img_size
-                self.mode = mode
-                self.imgs_path = os.path.join(root_dir, 'images')
-                self.annotations_path = os.path.join(root_dir, 'Annotations')
-                
-                # 讀取資料路徑
-                self.image_files = []
-                self.annotation_files = []
-                
-                # 從每個缺陷類型的資料夾載入圖片和標註
-                for defect_type in DEFECT_CLASSES.keys():
-                    img_dir = os.path.join(self.imgs_path, defect_type)
-                    ann_dir = os.path.join(self.annotations_path, defect_type)
+        # 從資料集路徑判斷使用自定義還是YOLO資料集
+        dataset_path = config.get('dataset', {}).get('path', config.get('dataset_path'))
+        if not dataset_path:
+            logger.error("未指定資料集路徑")
+            return None, None
+            
+        # 導入資料集處理模組
+        try:
+            # 使用整合的資料載入器
+            batch_size = config.get('dataset', {}).get('batch_size', 16)
+            img_size = config.get('dataset', {}).get('img_size', 640)
+            
+            class PCBDataset(torch.utils.data.Dataset):
+                """PCB缺陷檢測資料集類別"""
+                def __init__(self, root_dir, mode='val', img_size=640, transform=None):
+                    """初始化PCB缺陷檢測資料集"""
+                    self.root_dir = root_dir
+                    self.img_size = img_size
+                    self.mode = mode
+                    self.imgs_path = os.path.join(root_dir, 'images')
+                    self.annotations_path = os.path.join(root_dir, 'Annotations')
                     
-                    if not os.path.exists(img_dir) or not os.path.exists(ann_dir):
-                        logger.warning(f"找不到路徑 {img_dir} 或 {ann_dir}")
-                        continue
+                    # 檢查資料目錄
+                    for path in [root_dir, self.imgs_path, self.annotations_path]:
+                        if not os.path.exists(path):
+                            logger.error(f"目錄不存在: {path}")
+                            raise FileNotFoundError(f"目錄不存在: {path}")
+                    
+                    # 初始化資料路徑列表
+                    self.image_files = []
+                    self.annotation_files = []
+                    
+                    # 載入資料路徑
+                    self._load_dataset_paths()
+                    
+                    # 分割訓練和驗證資料集
+                    self._split_dataset()
+                    
+                    # 設定基本轉換
+                    from torchvision import transforms
+                    self.transform = transform or transforms.Compose([
+                        transforms.ToTensor(),
+                        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+                    ])
+                    
+                    logger.info(f"已載入 {mode} 模式的 {len(self.image_files)} 張圖片")
+                
+                def _load_dataset_paths(self):
+                    """載入圖像和標註檔路徑"""
+                    for defect_type in DEFECT_CLASSES.keys():
+                        # 嘗試不同的可能目錄格式
+                        img_dir_candidates = [
+                            os.path.join(self.imgs_path, defect_type),
+                            os.path.join(self.imgs_path, defect_type.replace('_', ' ')),
+                            os.path.join(self.imgs_path, defect_type.upper()),
+                        ]
                         
-                    for filename in os.listdir(img_dir):
-                        if filename.endswith('.jpg'):
-                            img_path = os.path.join(img_dir, filename)
-                            ann_path = os.path.join(ann_dir, filename.replace('.jpg', '.xml'))
+                        ann_dir_candidates = [
+                            os.path.join(self.annotations_path, defect_type),
+                            os.path.join(self.annotations_path, defect_type.replace('_', ' ')),
+                            os.path.join(self.annotations_path, defect_type.upper()),
+                        ]
+                        
+                        # 尋找有效的目錄組合
+                        found_valid_dir = False
+                        for img_dir in img_dir_candidates:
+                            if not os.path.exists(img_dir):
+                                continue
                             
-                            if os.path.exists(ann_path):
-                                self.image_files.append(img_path)
-                                self.annotation_files.append(ann_path)
-                
-                # 分割訓練和驗證資料集
-                indices = list(range(len(self.image_files)))
-                random.seed(42)  # 確保可重複性
-                random.shuffle(indices)
-                
-                split = int(len(indices) * 0.8)
-                train_indices = indices[:split]
-                val_indices = indices[split:]
-                
-                if mode == 'train':
-                    self.image_files = [self.image_files[i] for i in train_indices]
-                    self.annotation_files = [self.annotation_files[i] for i in train_indices]
-                else:  # val
-                    self.image_files = [self.image_files[i] for i in val_indices]
-                    self.annotation_files = [self.annotation_files[i] for i in val_indices]
-                
-                # 設定轉換
-                self.transform = transforms.Compose([
-                    transforms.ToTensor(),
-                    transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                                       std=[0.229, 0.224, 0.225])
-                ])
-            
-            def __len__(self):
-                return len(self.image_files)
-            
-            def __getitem__(self, idx):
-                img_path = self.image_files[idx]
-                ann_path = self.annotation_files[idx]
-                
-                # 讀取圖片
-                img = cv2.imread(img_path)
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                
-                # 獲取原始尺寸
-                h, w, _ = img.shape
-                
-                # 讀取標註
-                boxes, labels = self._parse_annotation(ann_path, w, h)
-                
-                # 應用轉換
-                img = self.transform(img)
-                
-                # 將邊界框和標籤轉換為張量
-                if len(boxes) > 0:
-                    boxes = torch.as_tensor(boxes, dtype=torch.float32)
-                    labels = torch.as_tensor(labels, dtype=torch.int64)
-                else:
-                    boxes = torch.zeros((0, 4), dtype=torch.float32)
-                    labels = torch.zeros(0, dtype=torch.int64)
-                
-                # 構建目標字典
-                target = {
-                    'boxes': boxes,
-                    'labels': labels,
-                    'image_id': torch.tensor([idx])
-                }
-                
-                return img, target
-            
-            def _parse_annotation(self, ann_path, img_width, img_height):
-                """解析XML標註檔"""
-                tree = ET.parse(ann_path)
-                root = tree.getroot()
-                
-                boxes = []
-                labels = []
-                
-                # 遍歷所有物體標註
-                for obj in root.findall('object'):
-                    name = obj.find('name').text
-                    if name not in DEFECT_CLASSES:
-                        continue
+                            for ann_dir in ann_dir_candidates:
+                                if not os.path.exists(ann_dir):
+                                    continue
+                                
+                                # 找到有效目錄，添加檔案
+                                found_valid_dir = True
+                                for filename in os.listdir(img_dir):
+                                    if filename.endswith('.jpg'):
+                                        img_path = os.path.join(img_dir, filename)
+                                        ann_path = os.path.join(ann_dir, filename.replace('.jpg', '.xml'))
+                                        
+                                        if os.path.exists(ann_path):
+                                            self.image_files.append(img_path)
+                                            self.annotation_files.append(ann_path)
+                                
+                                break  # 找到有效組合後跳出內層循環
+                            
+                            if found_valid_dir:
+                                break  # 找到有效組合後跳出外層循環
                         
-                    label = DEFECT_CLASSES[name]
-                    
-                    # 獲取邊界框坐標
-                    bbox = obj.find('bndbox')
-                    xmin = float(bbox.find('xmin').text) / img_width
-                    ymin = float(bbox.find('ymin').text) / img_height
-                    xmax = float(bbox.find('xmax').text) / img_width
-                    ymax = float(bbox.find('ymax').text) / img_height
-                    
-                    # 確保邊界框坐標有效
-                    if xmin >= xmax or ymin >= ymax:
-                        continue
+                        if not found_valid_dir:
+                            logger.warning(f"找不到缺陷類型 {defect_type} 的有效目錄")
+                
+                def _split_dataset(self):
+                    """分割訓練和驗證資料集"""
+                    if self.mode != 'test' and len(self.image_files) > 0:
+                        indices = list(range(len(self.image_files)))
+                        import random
+                        random.seed(42)  # 確保可重複性
+                        random.shuffle(indices)
                         
-                    boxes.append([xmin, ymin, xmax, ymax])
-                    labels.append(label)
+                        split = int(len(indices) * 0.8)
+                        train_indices = indices[:split]
+                        val_indices = indices[split:]
+                        
+                        if self.mode == 'train':
+                            self.image_files = [self.image_files[i] for i in train_indices]
+                            self.annotation_files = [self.annotation_files[i] for i in train_indices]
+                        else:  # val
+                            self.image_files = [self.image_files[i] for i in val_indices]
+                            self.annotation_files = [self.annotation_files[i] for i in val_indices]
+                
+                def __len__(self):
+                    """返回資料集大小"""
+                    return len(self.image_files)
+                
+                def __getitem__(self, idx):
+                    """獲取指定索引的樣本"""
+                    import xml.etree.ElementTree as ET
                     
-                return boxes, labels
-        
-        def collate_fn(batch):
-            """自定義批次組合函數"""
-            images, targets = list(zip(*batch))
-            return torch.stack(images), targets
-        
-        # 從配置中讀取參數
-        root_dir = config.get('dataset_path', 'C:/Users/a/Desktop/conference/PCB_DATASET')
-        batch_size = config.get('batch_size', 16)
-        img_size = config.get('img_size', 640)
-        num_workers = config.get('num_workers', 4)
-        
-        # 創建資料集和資料載入器
-        val_dataset = SimplePCBDataset(root_dir=root_dir, mode='val', img_size=img_size)
-        
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=num_workers,
-            collate_fn=collate_fn,
-            pin_memory=True
-        )
-        
-        logger.info(f"已建立資料載入器 ({len(val_dataset)} 樣本)")
-        
-        return None, val_loader
+                    # 讀取圖片
+                    img_path = self.image_files[idx]
+                    img = cv2.imread(img_path)
+                    if img is None:
+                        logger.warning(f"無法讀取圖像: {img_path}，使用空白圖像替代")
+                        img = np.zeros((self.img_size, self.img_size, 3), dtype=np.uint8)
+                    
+                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    orig_h, orig_w = img.shape[:2]
+                    
+                    # 調整圖片尺寸
+                    img_resized = cv2.resize(img, (self.img_size, self.img_size))
+                    
+                    # 讀取標註
+                    ann_path = self.annotation_files[idx]
+                    boxes, labels = [], []
+                    
+                    try:
+                        tree = ET.parse(ann_path)
+                        root = tree.getroot()
+                        
+                        # 獲取圖片尺寸
+                        size = root.find('size')
+                        if size is None:
+                            w, h = orig_w, orig_h
+                        else:
+                            w = int(size.find('width').text)
+                            h = int(size.find('height').text)
+                        
+                        # 遍歷所有物體標註
+                        for obj in root.findall('object'):
+                            name = obj.find('name').text
+                            if name not in DEFECT_CLASSES:
+                                continue
+                                
+                            label = DEFECT_CLASSES[name]
+                            
+                            # 獲取邊界框坐標
+                            bbox = obj.find('bndbox')
+                            if bbox is None:
+                                continue
+                                
+                            # 確保使用相對坐標 (0-1範圍)
+                            xmin = float(bbox.find('xmin').text) / w
+                            ymin = float(bbox.find('ymin').text) / h
+                            xmax = float(bbox.find('xmax').text) / w
+                            ymax = float(bbox.find('ymax').text) / h
+                            
+                            # 確保邊界框坐標有效
+                            if xmin >= xmax or ymin >= ymax:
+                                continue
+                                
+                            boxes.append([xmin, ymin, xmax, ymax])
+                            labels.append(label)
+                    except Exception as e:
+                        logger.error(f"解析標註檔出錯: {ann_path}, 錯誤: {e}")
+                    
+                    # 應用基本轉換
+                    img_tensor = self.transform(img_resized)
+                    
+                    # 準備張量
+                    boxes_tensor = torch.as_tensor(boxes, dtype=torch.float32) if boxes else torch.zeros((0, 4), dtype=torch.float32)
+                    labels_tensor = torch.as_tensor(labels, dtype=torch.int64) if labels else torch.zeros(0, dtype=torch.int64)
+                    
+                    # 構建目標字典
+                    target = {
+                        'boxes': boxes_tensor,
+                        'labels': labels_tensor,
+                        'image_id': torch.tensor([idx])
+                    }
+                    
+                    return img_tensor, target
+            
+            def collate_fn(batch):
+                """自定義批次組合函數"""
+                images, targets = [], []
+                for img, tgt in batch:
+                    images.append(img)
+                    targets.append(tgt)
+                images = torch.stack(images)
+                return images, targets
+            
+            # 創建資料集和資料載入器
+            val_dataset = PCBDataset(root_dir=dataset_path, mode='val', img_size=img_size)
+            
+            val_loader = torch.utils.data.DataLoader(
+                val_dataset,
+                batch_size=batch_size,
+                shuffle=False,
+                collate_fn=collate_fn,
+                num_workers=4,
+                pin_memory=True
+            )
+            
+            return None, val_loader
+            
+        except Exception as e:
+            logger.error(f"創建資料載入器失敗: {e}")
+            return None, None
+            
+    except Exception as e:
+        logger.error(f"獲取資料載入器失敗: {e}")
+        return None, None
 
 def calculate_iou(box1, box2):
     """計算兩個邊界框的IoU"""
-    # 計算交集區域
     x1 = max(box1[0], box2[0])
     y1 = max(box1[1], box2[1])
     x2 = min(box1[2], box2[2])
@@ -305,23 +355,16 @@ def calculate_iou(box1, box2):
         return 0
     
     # 計算IoU
-    iou = intersection / union
-    
-    return iou
+    return intersection / union
 
 def calculate_map(pred_boxes, pred_labels, pred_scores, 
                 gt_boxes, gt_labels, iou_threshold=0.5, num_classes=len(DEFECT_CLASSES)):
     """計算平均精確度均值 (mAP)"""
-    # 初始化
-    all_detections = []  # 所有預測，按類別分組
-    all_groundtruth = []  # 所有真值，按類別分組
+    # 初始化按類別分組的檢測和真值
+    all_detections = [[] for _ in range(num_classes)]
+    all_groundtruth = [[] for _ in range(num_classes)]
     
-    # 為每個類別初始化列表
-    for _ in range(num_classes):
-        all_detections.append([])
-        all_groundtruth.append([])
-    
-    # 組織預測和真值，按類別分組
+    # 組織預測和真值
     for image_idx in range(len(pred_boxes)):
         # 處理預測
         pred_box = pred_boxes[image_idx]
@@ -409,8 +452,7 @@ def calculate_map(pred_boxes, pred_labels, pred_scores,
         recall = cumsum_tp / num_gt if num_gt > 0 else np.zeros_like(cumsum_tp)
         precision = np.divide(cumsum_tp, (cumsum_tp + cumsum_fp), out=np.zeros_like(cumsum_tp), where=(cumsum_tp + cumsum_fp) > 0)
         
-        # 計算AP (平均精確度)
-        # 11點插值平均精確度計算
+        # 計算AP (平均精確度) - 11點插值
         ap = 0
         for t in np.arange(0, 1.1, 0.1):
             if np.sum(recall >= t) == 0:
@@ -431,8 +473,9 @@ def calculate_map(pred_boxes, pred_labels, pred_scores,
     mean_ap = np.sum(average_precisions) / valid_classes if valid_classes > 0 else 0
     
     # 計算平均精確率和召回率
-    mean_precision = np.mean(precisions[np.array([len(groundtruth) > 0 for groundtruth in all_groundtruth])])
-    mean_recall = np.mean(recalls[np.array([len(groundtruth) > 0 for groundtruth in all_groundtruth])])
+    valid_indices = np.array([len(groundtruth) > 0 for groundtruth in all_groundtruth])
+    mean_precision = np.mean(precisions[valid_indices]) if np.any(valid_indices) else 0
+    mean_recall = np.mean(recalls[valid_indices]) if np.any(valid_indices) else 0
     
     metrics = {
         'mAP': float(mean_ap),
@@ -458,9 +501,8 @@ def preprocess_image(image):
 def process_predictions(outputs, conf_threshold=0.25):
     """處理模型預測輸出"""
     try:
-        # 嘗試處理YOLO格式輸出
+        # 處理YOLO格式輸出
         if hasattr(outputs, 'boxes'):
-            # YOLO8 原生格式
             boxes = []
             labels = []
             scores = []
@@ -473,16 +515,16 @@ def process_predictions(outputs, conf_threshold=0.25):
                     scores.append(float(det.conf))
                     
             return boxes, labels, scores
-        elif isinstance(outputs, tuple) and len(outputs) > 0:
-            # 自定義格式
-            detections = outputs[0]
+        else:
+            # 處理其他格式輸出
+            detections = outputs[0] if isinstance(outputs, (list, tuple)) and len(outputs) > 0 else []
             
             # 初始化結果列表
             boxes = []
             labels = []
             scores = []
             
-            if len(detections) > 0:
+            if isinstance(detections, torch.Tensor) and len(detections) > 0:
                 # 過濾高置信度的檢測
                 high_conf_idxs = detections[:, 4] > conf_threshold
                 high_conf_detections = detections[high_conf_idxs]
@@ -496,12 +538,8 @@ def process_predictions(outputs, conf_threshold=0.25):
                         boxes.append(box)
                         labels.append(cls_id)
                         scores.append(conf)
-                        
+            
             return boxes, labels, scores
-        else:
-            # 未知格式
-            logger.warning("無法識別的輸出格式，返回空結果")
-            return [], [], []
     except Exception as e:
         logger.error(f"處理預測時發生錯誤: {e}")
         return [], [], []
@@ -591,6 +629,7 @@ def evaluate_model(model, val_loader, conf_threshold=0.25, iou_threshold=0.5, de
     
     with torch.no_grad():
         for images, targets in tqdm(val_loader, desc="評估進度"):
+            # 將圖像移到設備
             images = images.to(device)
             
             # 獲取預測
@@ -607,6 +646,11 @@ def evaluate_model(model, val_loader, conf_threshold=0.25, iou_threshold=0.5, de
                     
                     # 篩選屬於該批次的預測
                     for i, det in enumerate(outputs.boxes):
+                        # 如果有batch_idx屬性，檢查是否屬於當前批次
+                        if hasattr(det, 'batch_idx'):
+                            if det.batch_idx.item() != batch_idx:
+                                continue
+                        
                         if det.conf >= conf_threshold:
                             x1, y1, x2, y2 = det.xyxy[0].tolist()
                             batch_boxes.append([x1/images.shape[3], y1/images.shape[2], 
@@ -614,15 +658,15 @@ def evaluate_model(model, val_loader, conf_threshold=0.25, iou_threshold=0.5, de
                             batch_labels.append(int(det.cls))
                             batch_scores.append(float(det.conf))
                             
-                    all_pred_boxes.append(batch_boxes)
-                    all_pred_labels.append(batch_labels)
-                    all_pred_scores.append(batch_scores)
+                    all_pred_boxes.append(np.array(batch_boxes))
+                    all_pred_labels.append(np.array(batch_labels))
+                    all_pred_scores.append(np.array(batch_scores))
                 else:
                     # 自定義格式
                     boxes, labels, scores = process_predictions(outputs, conf_threshold)
-                    all_pred_boxes.append(boxes)
-                    all_pred_labels.append(labels)
-                    all_pred_scores.append(scores)
+                    all_pred_boxes.append(np.array(boxes))
+                    all_pred_labels.append(np.array(labels))
+                    all_pred_scores.append(np.array(scores))
                 
                 # 獲取真實標籤
                 target = targets[batch_idx]
@@ -672,18 +716,13 @@ def benchmark_model(model, input_shape=(1, 3, 640, 640), num_runs=100, device='c
     
     with torch.no_grad():
         for _ in tqdm(range(num_runs), desc="性能測試"):
-            # 開始計時
             start_time = time.time()
-            
-            # 前向傳播
             _ = model(dummy_input)
             
             # 同步GPU
             if device.type == 'cuda':
                 torch.cuda.synchronize()
                 
-            # 記錄時間
-            # 記錄時間
             inference_times.append(time.time() - start_time)
     
     # 計算統計數據
@@ -924,6 +963,44 @@ def compare_models(models_dict, val_loader, conf_threshold=0.25, iou_threshold=0
     
     return results
 
+def export_model(model, output_path, format='onnx', input_shape=(1, 3, 640, 640)):
+    """導出模型為部署格式"""
+    logger.info(f"開始導出模型為{format}格式")
+    
+    # 確保輸出目錄存在
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    
+    # 設定為評估模式
+    model.eval()
+    
+    try:
+        # YOLO模型導出
+        if hasattr(model, 'export'):
+            model.export(format=format, imgsz=input_shape[2:], file=output_path)
+            logger.info(f"模型已成功導出為{format}格式: {output_path}")
+            return True
+        # PyTorch模型導出
+        elif format.lower() == 'onnx':
+            dummy_input = torch.randn(input_shape)
+            torch.onnx.export(
+                model,
+                dummy_input,
+                output_path,
+                export_params=True,
+                opset_version=12,
+                input_names=['input'],
+                output_names=['output'],
+                dynamic_axes={'input': {0: 'batch_size'}, 'output': {0: 'batch_size'}}
+            )
+            logger.info(f"模型已成功導出為ONNX格式: {output_path}")
+            return True
+        else:
+            logger.error(f"不支援的導出格式: {format}")
+            return False
+    except Exception as e:
+        logger.error(f"導出模型失敗: {e}")
+        return False
+
 def main():
     """主函數"""
     # 解析命令行參數
@@ -980,6 +1057,10 @@ def main():
         # 獲取驗證資料載入器
         _, val_loader = get_dataloader(config)
         
+        if val_loader is None:
+            logger.error("無法創建資料載入器，程式退出")
+            return
+        
         # 如果需要比較多個模型
         if args.compare:
             # 解析比較模型路徑
@@ -1018,6 +1099,16 @@ def main():
                     input_shape=(1, 3, config.get('img_size', 640), config.get('img_size', 640)),
                     num_runs=100,
                     device=device
+                )
+            
+            # 如果需要導出模型
+            if args.export:
+                export_path = os.path.join(output_dir, f"exported_model.{args.export}")
+                export_model(
+                    model=model,
+                    output_path=export_path,
+                    format=args.export,
+                    input_shape=(1, 3, config.get('img_size', 640), config.get('img_size', 640))
                 )
             
             # 評估主模型
