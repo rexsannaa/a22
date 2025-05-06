@@ -24,7 +24,7 @@ from pathlib import Path
 import time
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-
+import numpy as np
 # 從專案模組導入功能
 from data.dataset import get_dataloader
 from models.model import get_teacher_model, get_student_model, load_model
@@ -90,17 +90,28 @@ def train_model(model, train_loader, val_loader, config, model_type="student"):
     # 將模型移到設備上
     model = model.to(device)
     
+    # 檢查是否是YOLO模型
+    is_yolo_model = hasattr(model, 'model') and hasattr(model.model, 'model')
+    
     # 訓練參數
     epochs = config.get('epochs', 100)
     learning_rate = config.get('learning_rate', 1e-4)
     weight_decay = config.get('weight_decay', 1e-5)
     
     # 設置優化器
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=learning_rate,
-        weight_decay=weight_decay
-    )
+    if is_yolo_model:
+        # 獲取YOLO模型的參數
+        optimizer = torch.optim.AdamW(
+            model.model.model.parameters(),
+            lr=learning_rate,
+            weight_decay=weight_decay
+        )
+    else:
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=learning_rate,
+            weight_decay=weight_decay
+        )
     
     # 設置學習率調度器
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -124,7 +135,15 @@ def train_model(model, train_loader, val_loader, config, model_type="student"):
     
     for epoch in range(epochs):
         # 訓練一個周期
-        model.train()
+        if is_yolo_model:
+            # 對於YOLO模型，使用特定方法設置訓練模式
+            if hasattr(model, 'train') and callable(model.train):
+                model.train(True)
+            else:
+                model.model.model.train()
+        else:
+            model.train()
+        
         epoch_loss = 0
         
         with tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}") as pbar:
@@ -143,7 +162,7 @@ def train_model(model, train_loader, val_loader, config, model_type="student"):
                 outputs = model(images)
                 
                 # 計算損失 (根據模型類型調整)
-                if hasattr(model, 'model') and hasattr(model.model, 'model') and hasattr(model.model.model, 'loss'):
+                if is_yolo_model and hasattr(model.model.model, 'loss'):
                     loss_dict = model.model.model.loss(outputs, targets)
                     loss = sum(loss_dict.values())
                 else:
@@ -170,7 +189,15 @@ def train_model(model, train_loader, val_loader, config, model_type="student"):
         # 定期評估
         if (epoch + 1) % config.get('eval_interval', 5) == 0 or epoch == epochs - 1:
             # 評估模型
-            model.eval()
+            if is_yolo_model:
+                # 對於YOLO模型，使用特定方法設置評估模式
+                if hasattr(model, 'eval') and callable(model.eval):
+                    model.eval()
+                else:
+                    model.model.model.eval()
+            else:
+                model.eval()
+                
             val_loss = 0
             
             with torch.no_grad():
@@ -186,7 +213,7 @@ def train_model(model, train_loader, val_loader, config, model_type="student"):
                     outputs = model(images)
                     
                     # 計算損失
-                    if hasattr(model, 'model') and hasattr(model.model, 'model') and hasattr(model.model.model, 'loss'):
+                    if is_yolo_model and hasattr(model.model.model, 'loss'):
                         loss_dict = model.model.model.loss(outputs, targets)
                         loss = sum(loss_dict.values())
                     else:
@@ -202,94 +229,7 @@ def train_model(model, train_loader, val_loader, config, model_type="student"):
             metrics_history['val_loss'].append(avg_val_loss)
             
             # 計算mAP等評估指標
-            from utils.utils import calculate_map
-
-            # 收集預測和真實標籤
-            all_pred_boxes = []
-            all_pred_labels = []
-            all_pred_scores = []
-            all_gt_boxes = []
-            all_gt_labels = []
-
-            with torch.no_grad():
-                for images, targets in tqdm(val_loader, desc="Collecting predictions"):
-                    images = images.to(device)
-                    # 獲取預測
-                    outputs = model(images)
-                    
-                    # 處理預測結果 (根據模型輸出格式調整)
-                    if hasattr(outputs, 'boxes') and hasattr(outputs.boxes, 'xyxy'):
-                        # YOLO8 原生格式
-                        for i, img in enumerate(images):
-                            # 過濾該批次的預測
-                            batch_boxes = []
-                            batch_scores = []
-                            batch_labels = []
-                            
-                            # 提取當前圖像的檢測結果
-                            for j, box in enumerate(outputs.boxes):
-                                # 檢查是否屬於當前圖像 (如果batch_idx存在)
-                                if hasattr(box, 'batch_idx'):
-                                    if box.batch_idx.item() == i:
-                                        batch_boxes.append(box.xyxy[0].cpu().numpy())
-                                        batch_scores.append(box.conf.item())
-                                        batch_labels.append(int(box.cls.item()))
-                                else:
-                                    # 如果沒有batch_idx，假定所有框都屬於同一張圖
-                                    batch_boxes.append(box.xyxy[0].cpu().numpy())
-                                    batch_scores.append(box.conf.item())
-                                    batch_labels.append(int(box.cls.item()))
-                            
-                            # 添加到收集列表
-                            all_pred_boxes.append(np.array(batch_boxes))
-                            all_pred_scores.append(np.array(batch_scores))
-                            all_pred_labels.append(np.array(batch_labels))
-                            
-                            # 提取真實標籤
-                            if i < len(targets):
-                                target = targets[i]
-                                all_gt_boxes.append(target['boxes'].cpu().numpy())
-                                all_gt_labels.append(target['labels'].cpu().numpy())
-                    else:
-                        # 處理其他格式的輸出
-                        for batch_idx, target in enumerate(targets):
-                            # 提取真實標籤
-                            all_gt_boxes.append(target['boxes'].cpu().numpy())
-                            all_gt_labels.append(target['labels'].cpu().numpy())
-                            
-                            # 嘗試不同的方式處理預測結果
-                            if isinstance(outputs, (list, tuple)) and len(outputs) > batch_idx:
-                                output = outputs[batch_idx]
-                                if isinstance(output, (list, tuple)) and len(output) >= 3:
-                                    # [boxes, scores, labels] 格式
-                                    boxes = output[0]
-                                    scores = output[1]
-                                    labels = output[2]
-                                    
-                                    all_pred_boxes.append(boxes.cpu().numpy() if isinstance(boxes, torch.Tensor) else np.array([]))
-                                    all_pred_scores.append(scores.cpu().numpy() if isinstance(scores, torch.Tensor) else np.array([]))
-                                    all_pred_labels.append(labels.cpu().numpy() if isinstance(labels, torch.Tensor) else np.array([]))
-                                else:
-                                    # 添加空列表，表示沒有檢測到任何物體
-                                    all_pred_boxes.append(np.array([]))
-                                    all_pred_scores.append(np.array([]))
-                                    all_pred_labels.append(np.array([]))
-                            else:
-                                # 添加空列表，表示沒有檢測到任何物體
-                                all_pred_boxes.append(np.array([]))
-                                all_pred_scores.append(np.array([]))
-                                all_pred_labels.append(np.array([]))
-                            
-                            # 提取真實標籤
-                            target = targets[batch_idx]
-                            all_gt_boxes.append(target['boxes'].cpu().numpy())
-                            all_gt_labels.append(target['labels'].cpu().numpy())
-            
-            # 計算評估指標
-            metrics = calculate_map(
-                all_pred_boxes, all_pred_labels, all_pred_scores,
-                all_gt_boxes, all_gt_labels
-            )
+            metrics = calculate_detection_metrics(model, val_loader, device)
             
             # 更新指標歷史
             metrics_history['mAP'].append(metrics['mAP'])
@@ -309,12 +249,29 @@ def train_model(model, train_loader, val_loader, config, model_type="student"):
                 best_metrics = metrics
                 best_epoch = epoch + 1
                 best_model_path = weights_dir / f"{model_type}_best.pt"
-                torch.save(model.state_dict(), best_model_path)
+                
+                # 儲存模型，根據不同模型類型調整
+                if is_yolo_model:
+                    # 對於YOLO模型，優先使用save方法
+                    if hasattr(model.model, 'save'):
+                        model.model.save(best_model_path)
+                    else:
+                        torch.save(model.state_dict(), best_model_path)
+                else:
+                    torch.save(model.state_dict(), best_model_path)
+                
                 logger.info(f"發現更好的模型 (mAP: {best_metrics['mAP']:.4f})，已儲存至: {best_model_path}")
             
             # 儲存當前檢查點
             checkpoint_path = weights_dir / f"{model_type}_epoch_{epoch+1}.pt"
-            torch.save(model.state_dict(), checkpoint_path)
+            if is_yolo_model:
+                # 對於YOLO模型，優先使用save方法
+                if hasattr(model.model, 'save'):
+                    model.model.save(checkpoint_path)
+                else:
+                    torch.save(model.state_dict(), checkpoint_path)
+            else:
+                torch.save(model.state_dict(), checkpoint_path)
     
     # 計算總訓練時間
     total_time = total_timer.stop().format_time()
@@ -330,7 +287,14 @@ def train_model(model, train_loader, val_loader, config, model_type="student"):
     # 載入最佳模型
     best_model_path = weights_dir / f"{model_type}_best.pt"
     if os.path.exists(best_model_path):
-        model.load_state_dict(torch.load(best_model_path))
+        if is_yolo_model:
+            # 對於YOLO模型，需要特殊處理
+            if hasattr(model.model, 'load'):
+                model.model.load(best_model_path)
+            else:
+                model.load_state_dict(torch.load(best_model_path))
+        else:
+            model.load_state_dict(torch.load(best_model_path))
         logger.info(f"已載入最佳模型: {best_model_path}")
     
     return model, best_metrics
@@ -380,8 +344,9 @@ def train(config, teacher_model=None, student_model=None, use_distillation=True,
         logger.info("開始訓練教師模型...")
         # 調整教師模型訓練的參數
         teacher_config = config.copy()
-        teacher_config['epochs'] = config.get('teacher_epochs', config.get('epochs', 100))
-        teacher_config['learning_rate'] = config.get('teacher_learning_rate', config.get('learning_rate', 1e-4))
+        teacher_config['epochs'] = config.get('teacher_training', {}).get('epochs', config.get('epochs', 100))
+        teacher_config['learning_rate'] = config.get('teacher_training', {}).get('learning_rate', config.get('learning_rate', 1e-4))
+        teacher_config['weight_decay'] = config.get('teacher_training', {}).get('weight_decay', config.get('weight_decay', 1e-5))
         
         # 確保教師模型設置了正確的類別數量
         if hasattr(teacher_model, 'model') and hasattr(teacher_model.model, 'model'):
@@ -390,6 +355,12 @@ def train(config, teacher_model=None, student_model=None, use_distillation=True,
             try:
                 teacher_model.model.model.nc = num_classes
                 logger.info(f"已設置教師模型類別數量為: {num_classes}")
+                
+                # 更新檢測頭的類別數量
+                for m in teacher_model.model.model:
+                    if hasattr(m, 'nc'):
+                        m.nc = num_classes
+                        logger.info(f"已設置檢測頭類別數量為: {num_classes}")
             except Exception as e:
                 logger.warning(f"設置教師模型類別數量時發生錯誤: {e}")
         
@@ -400,8 +371,11 @@ def train(config, teacher_model=None, student_model=None, use_distillation=True,
                     teacher_model.model.args['val'] = False
                     teacher_model.model.args['data'] = None
                 else:
-                    teacher_model.model.args.val = False
-                    teacher_model.model.args.data = None
+                    try:
+                        teacher_model.model.args.val = False
+                        teacher_model.model.args.data = None
+                    except:
+                        logger.warning("無法設置YOLO模型驗證參數，可能仍會嘗試下載COCO數據集")
         except Exception as e:
             logger.warning(f"設置YOLO模型參數時發生錯誤: {e}")
         
@@ -415,6 +389,17 @@ def train(config, teacher_model=None, student_model=None, use_distillation=True,
         )
         
         logger.info(f"教師模型訓練完成，最佳mAP: {teacher_metrics['mAP']:.4f}")
+        
+        # 儲存教師模型
+        teacher_path = weights_dir / "teacher_final.pt"
+        
+        # 根據模型類型選擇保存方法
+        if hasattr(teacher_model, 'model') and hasattr(teacher_model.model, 'save'):
+            teacher_model.model.save(teacher_path)
+        else:
+            torch.save(teacher_model.state_dict(), teacher_path)
+            
+        logger.info(f"教師模型已儲存至: {teacher_path}")
         
         # 儲存教師模型
         teacher_path = weights_dir / "teacher_final.pt"

@@ -210,7 +210,22 @@ class TeacherModel(nn.Module):
             self._get_layer(layer_name).register_forward_hook(
                 get_features(feature_name)
             )
+    def train(self, mode=True):
+        """
+        重寫train方法以適應YOLO模型
         
+        參數:
+            mode: 是否設為訓練模式
+        """
+        if mode:
+            # 設置模型為訓練模式
+            if hasattr(self.model, 'model'):
+                self.model.model.train()
+        else:
+            # 設置模型為評估模式
+            if hasattr(self.model, 'model'):
+                self.model.model.eval()
+        return self    
     def _get_layer(self, layer_name):
         """根據名稱獲取模型中的層"""
         parts = layer_name.split('.')
