@@ -348,9 +348,12 @@ class DistillationManager:
                 # 計算任務損失
                 task_loss = self._compute_task_loss(student_out, targets)
 
-                # 確保損失具有梯度
-                if not task_loss.requires_grad:
-                    task_loss = task_loss.detach().clone().requires_grad_(True)
+                # 確保任務損失是張量並具有梯度
+                if isinstance(task_loss, torch.Tensor):
+                    if not task_loss.requires_grad:
+                        task_loss = task_loss.detach().clone().requires_grad_(True)
+                else:
+                    task_loss = torch.tensor(task_loss, device=self.device, requires_grad=True)
 
                 # 計算蒸餾損失
                 try:
@@ -363,22 +366,32 @@ class DistillationManager:
                         distill_loss = self.logit_loss(student_out[0], teacher_out[0])
                     else:
                         # 其他格式或無法處理的情況
-                        logging.warning("無法確定模型輸出格式，跳過蒸餾損失計算")
+                        logger.warning("無法確定模型輸出格式，跳過蒸餾損失計算")
                         distill_loss = torch.tensor(0.0, device=self.device)
                 except Exception as e:
-                    logging.warning(f"計算蒸餾損失時發生錯誤: {e}")
+                    logger.warning(f"計算蒸餾損失時發生錯誤: {e}")
                     distill_loss = torch.tensor(0.0, device=self.device)
 
-                # 確保蒸餾損失具有梯度
-                if not distill_loss.requires_grad:
-                    distill_loss = distill_loss.detach().clone().requires_grad_(True)
+                # 確保蒸餾損失是張量並具有梯度
+                if isinstance(distill_loss, torch.Tensor):
+                    if not distill_loss.requires_grad:
+                        distill_loss = distill_loss.detach().clone().requires_grad_(True)
+                else:
+                    distill_loss = torch.tensor(distill_loss, device=self.device, requires_grad=True)
 
                 # 計算特徵蒸餾損失
-                feature_loss, _ = self.feature_loss(student_features, teacher_features)
-
-                # 確保特徵損失具有梯度
-                if not feature_loss.requires_grad:
-                    feature_loss = feature_loss.detach().clone().requires_grad_(True)
+                try:
+                    feature_loss, _ = self.feature_loss(student_features, teacher_features)
+                    
+                    # 確保特徵損失是張量並具有梯度
+                    if isinstance(feature_loss, torch.Tensor):
+                        if not feature_loss.requires_grad:
+                            feature_loss = feature_loss.detach().clone().requires_grad_(True)
+                    else:
+                        feature_loss = torch.tensor(feature_loss, device=self.device, requires_grad=True)
+                except Exception as e:
+                    logger.warning(f"計算特徵損失時發生錯誤: {e}")
+                    feature_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
 
                 # 總損失 - 使用帶有梯度的損失
                 loss = (self.alpha * task_loss + 
@@ -569,6 +582,12 @@ class DistillationManager:
         """計算邊界框損失 (使用 GIoU 或 L1 損失)"""
         loss = torch.tensor(0.0, device=self.device)
         try:
+            # 確保預測框在正確的設備上
+            if isinstance(pred_boxes, list):
+                pred_boxes = [pb.to(self.device) if isinstance(pb, torch.Tensor) and pb.device != self.device else pb for pb in pred_boxes]
+            elif isinstance(pred_boxes, torch.Tensor) and pred_boxes.device != self.device:
+                pred_boxes = pred_boxes.to(self.device)
+                
             for i, target in enumerate(targets):
                 if 'boxes' in target and len(target['boxes']) > 0:
                     # 只計算有目標的樣本
@@ -616,6 +635,7 @@ class DistillationManager:
                                 loss += F.l1_loss(pred_box, gt_box)
         except Exception as e:
             logger.warning(f"計算邊界框損失時發生錯誤: {e}")
+        
         return loss
 
     def _compute_iou(self, box1, box2):
