@@ -7,8 +7,8 @@ utils.py - PCB缺陷檢測工具模組
 主要特點:
 1. 整合mAP、精確率、召回率等評估指標計算
 2. 提供檢測結果視覺化功能
-3. 實現日誌記錄與TensorBoard整合
-4. 支援模型權重儲存與載入等工具函數
+3. 實現日誌記錄與進度追蹤
+4. 支援模型權重儲存與載入
 """
 
 import os
@@ -21,15 +21,10 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from datetime import datetime
 import yaml
-from collections import defaultdict
 from tqdm import tqdm
-import torch.nn.functional as F
 
 # 設定日誌
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # PCB缺陷類別
@@ -54,14 +49,7 @@ DEFECT_COLORS = {
 }
 
 def load_config(config_path):
-    """載入配置檔案
-    
-    參數:
-        config_path: 配置檔案路徑
-        
-    回傳:
-        config: 配置字典
-    """
+    """載入配置檔案"""
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
@@ -72,15 +60,7 @@ def load_config(config_path):
         return {}
 
 def setup_experiment(config):
-    """設置實驗環境
-    
-    參數:
-        config: 配置字典
-        
-    回傳:
-        output_dir: 輸出目錄
-        run_name: 實驗名稱
-    """
+    """設置實驗環境"""
     # 建立輸出目錄
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_name = f"{config.get('experiment_name', 'pcb_defect')}_{timestamp}"
@@ -95,9 +75,6 @@ def setup_experiment(config):
     logs_dir.mkdir(parents=True, exist_ok=True)
     
     logger.info(f"實驗名稱: {run_name}")
-    logger.info(f"權重儲存目錄: {weights_dir}")
-    logger.info(f"圖表儲存目錄: {charts_dir}")
-    logger.info(f"日誌儲存目錄: {logs_dir}")
     
     # 儲存配置
     with open(logs_dir / 'config.yaml', 'w', encoding='utf-8') as f:
@@ -111,15 +88,7 @@ def setup_experiment(config):
     }
 
 def calculate_iou(box1, box2):
-    """計算兩個邊界框的IoU
-    
-    參數:
-        box1: [x1, y1, x2, y2] 格式的邊界框
-        box2: [x1, y1, x2, y2] 格式的邊界框
-        
-    回傳:
-        iou: 交並比
-    """
+    """計算兩個邊界框的IoU"""
     # 計算交集區域
     x1 = max(box1[0], box2[0])
     y1 = max(box1[1], box2[1])
@@ -139,34 +108,14 @@ def calculate_iou(box1, box2):
         return 0
     
     # 計算IoU
-    iou = intersection / union
-    
-    return iou
+    return intersection / union
 
 def calculate_map(pred_boxes, pred_labels, pred_scores, 
                 gt_boxes, gt_labels, iou_threshold=0.5, num_classes=6):
-    """計算平均精確度均值 (mAP)
-    
-    參數:
-        pred_boxes: 預測邊界框列表，每個元素形狀為 [n, 4]
-        pred_labels: 預測類別列表，每個元素形狀為 [n]
-        pred_scores: 預測分數列表，每個元素形狀為 [n]
-        gt_boxes: 真實邊界框列表，每個元素形狀為 [m, 4]
-        gt_labels: 真實類別列表，每個元素形狀為 [m]
-        iou_threshold: IoU閾值，預設為0.5
-        num_classes: 類別數量，預設為6
-        
-    回傳:
-        metrics: 包含mAP、精確率、召回率的字典
-    """
+    """計算平均精確度均值 (mAP)"""
     # 初始化
-    all_detections = []  # 所有預測，按類別分組
-    all_groundtruth = []  # 所有真值，按類別分組
-    
-    # 為每個類別初始化列表
-    for _ in range(num_classes):
-        all_detections.append([])
-        all_groundtruth.append([])
+    all_detections = [[] for _ in range(num_classes)]  # 所有預測，按類別分組
+    all_groundtruth = [[] for _ in range(num_classes)]  # 所有真值，按類別分組
     
     # 組織預測和真值，按類別分組
     for image_idx in range(len(pred_boxes)):
@@ -256,8 +205,7 @@ def calculate_map(pred_boxes, pred_labels, pred_scores,
         recall = cumsum_tp / num_gt if num_gt > 0 else np.zeros_like(cumsum_tp)
         precision = cumsum_tp / (cumsum_tp + cumsum_fp)
         
-        # 計算AP (平均精確度)
-        # 11點插值平均精確度計算
+        # 計算AP (平均精確度) - 11點插值
         ap = 0
         for t in np.arange(0, 1.1, 0.1):
             if np.sum(recall >= t) == 0:
@@ -278,8 +226,9 @@ def calculate_map(pred_boxes, pred_labels, pred_scores,
     mean_ap = np.sum(average_precisions) / valid_classes if valid_classes > 0 else 0
     
     # 計算平均精確率和召回率
-    mean_precision = np.mean(precisions[np.array([len(groundtruth) > 0 for groundtruth in all_groundtruth])])
-    mean_recall = np.mean(recalls[np.array([len(groundtruth) > 0 for groundtruth in all_groundtruth])])
+    valid_indices = np.array([len(groundtruth) > 0 for groundtruth in all_groundtruth])
+    mean_precision = np.mean(precisions[valid_indices]) if np.any(valid_indices) else 0
+    mean_recall = np.mean(recalls[valid_indices]) if np.any(valid_indices) else 0
     
     metrics = {
         'mAP': float(mean_ap),
@@ -291,18 +240,7 @@ def calculate_map(pred_boxes, pred_labels, pred_scores,
     return metrics
 
 def draw_boxes(image, boxes, labels, scores=None, threshold=0.5):
-    """在圖像上繪製邊界框
-    
-    參數:
-        image: 原始圖像 (OpenCV格式，BGR)
-        boxes: 邊界框列表，格式為 [x1, y1, x2, y2]
-        labels: 類別標籤列表
-        scores: 置信度分數列表
-        threshold: 顯示的置信度閾值
-        
-    回傳:
-        image: 繪製了邊界框的圖像
-    """
+    """在圖像上繪製邊界框"""
     image_copy = image.copy()
     h, w, _ = image_copy.shape
     
@@ -313,10 +251,10 @@ def draw_boxes(image, boxes, labels, scores=None, threshold=0.5):
         
         # 轉換為整數坐標並確保在圖像範圍內
         x1, y1, x2, y2 = box
-        x1 = int(max(0, x1 * w))
-        y1 = int(max(0, y1 * h))
-        x2 = int(min(w, x2 * w))
-        y2 = int(min(h, y2 * h))
+        x1 = int(max(0, x1 * w if max(box) <= 1.0 else x1))
+        y1 = int(max(0, y1 * h if max(box) <= 1.0 else y1))
+        x2 = int(min(w, x2 * w if max(box) <= 1.0 else x2))
+        y2 = int(min(h, y2 * h if max(box) <= 1.0 else y2))
         
         # 獲取類別和顏色
         label_idx = int(labels[i])
@@ -359,15 +297,7 @@ def draw_boxes(image, boxes, labels, scores=None, threshold=0.5):
     return image_copy
 
 def visualize_predictions(model, image_paths, output_dir, device, conf_threshold=0.25):
-    """視覺化模型預測結果
-    
-    參數:
-        model: 檢測模型
-        image_paths: 圖像路徑列表
-        output_dir: 輸出目錄
-        device: 運算設備
-        conf_threshold: 置信度閾值
-    """
+    """視覺化模型預測結果"""
     os.makedirs(output_dir, exist_ok=True)
     
     model.eval()
@@ -381,8 +311,7 @@ def visualize_predictions(model, image_paths, output_dir, device, conf_threshold
                 continue
                 
             original_image = image.copy()
-            h, w, _ = original_image.shape
-            
+                
             # 轉換為RGB並預處理
             image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             image_tensor = preprocess_image(image_rgb).to(device)
@@ -404,14 +333,7 @@ def visualize_predictions(model, image_paths, output_dir, device, conf_threshold
     logger.info(f"預測視覺化結果已儲存至: {output_dir}")
 
 def preprocess_image(image):
-    """預處理圖像用於模型輸入
-    
-    參數:
-        image: RGB格式的圖像
-        
-    回傳:
-        tensor: 預處理後的圖像張量
-    """
+    """預處理圖像用於模型輸入"""
     from torchvision import transforms
     
     transform = transforms.Compose([
@@ -423,30 +345,29 @@ def preprocess_image(image):
     return transform(image).unsqueeze(0)  # 添加批次維度
 
 def process_predictions(outputs, conf_threshold=0.25):
-    """處理模型預測輸出
+    """處理模型預測輸出"""
+    # 處理YOLO格式輸出
+    if hasattr(outputs, 'boxes'):
+        boxes = []
+        labels = []
+        scores = []
+        for det in outputs.boxes:
+            if det.conf >= conf_threshold:
+                box = det.xyxy[0].tolist()
+                boxes.append(box)
+                labels.append(int(det.cls.item()))
+                scores.append(float(det.conf.item()))
+        return boxes, labels, scores
     
-    參數:
-        outputs: 模型輸出
-        conf_threshold: 置信度閾值
-        
-    回傳:
-        boxes: 邊界框列表
-        labels: 類別標籤列表
-        scores: 置信度分數列表
-    """
-    # 這個函數需要根據實際模型輸出格式調整
-    # 這裡假設是YOLO格式輸出
-    
-    # 從輸出中提取資訊
-    # 假設outputs是一個列表，第一個元素包含檢測結果
-    detections = outputs[0]
+    # 處理其他格式輸出
+    detections = outputs[0] if isinstance(outputs, (list, tuple)) and len(outputs) > 0 else []
     
     # 初始化結果列表
     boxes = []
     labels = []
     scores = []
     
-    if len(detections) > 0:
+    if isinstance(detections, torch.Tensor) and len(detections) > 0:
         # 過濾高置信度的檢測
         high_conf_idxs = detections[:, 4] > conf_threshold
         high_conf_detections = detections[high_conf_idxs]
@@ -464,12 +385,7 @@ def process_predictions(outputs, conf_threshold=0.25):
     return boxes, labels, scores
 
 def plot_training_metrics(metrics_dict, output_path):
-    """繪製訓練指標圖表
-    
-    參數:
-        metrics_dict: 包含訓練指標的字典，格式為 {'metric_name': [values]}
-        output_path: 圖表輸出路徑
-    """
+    """繪製訓練指標圖表"""
     # 設定圖表
     plt.figure(figsize=(12, 8))
     
@@ -496,13 +412,7 @@ def plot_training_metrics(metrics_dict, output_path):
     logger.info(f"訓練指標圖表已儲存至: {output_path}")
 
 def plot_confusion_matrix(confusion_matrix, class_names, output_path):
-    """繪製混淆矩陣
-    
-    參數:
-        confusion_matrix: 混淆矩陣 numpy 陣列
-        class_names: 類別名稱列表
-        output_path: 圖表輸出路徑
-    """
+    """繪製混淆矩陣"""
     # 設定圖表
     plt.figure(figsize=(10, 8))
     
@@ -535,15 +445,7 @@ def plot_confusion_matrix(confusion_matrix, class_names, output_path):
     logger.info(f"混淆矩陣圖表已儲存至: {output_path}")
 
 def plot_pr_curve(precisions, recalls, ap_values, class_names, output_path):
-    """繪製精確率-召回率曲線
-    
-    參數:
-        precisions: 每個類別的精確率列表的列表
-        recalls: 每個類別的召回率列表的列表
-        ap_values: 每個類別的平均精確度值
-        class_names: 類別名稱列表
-        output_path: 圖表輸出路徑
-    """
+    """繪製精確率-召回率曲線"""
     # 設定圖表
     plt.figure(figsize=(10, 8))
     
@@ -568,12 +470,7 @@ def plot_pr_curve(precisions, recalls, ap_values, class_names, output_path):
     logger.info(f"PR曲線圖表已儲存至: {output_path}")
 
 def save_model_summary(model, output_path):
-    """儲存模型摘要資訊
-    
-    參數:
-        model: PyTorch模型
-        output_path: 輸出文件路徑
-    """
+    """儲存模型摘要資訊"""
     # 計算模型參數
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -594,14 +491,7 @@ def save_model_summary(model, output_path):
     logger.info(f"模型摘要已儲存至: {output_path}")
 
 def generate_report(metrics, class_names, experiment_dir, config):
-    """生成實驗報告
-    
-    參數:
-        metrics: 評估指標字典
-        class_names: 類別名稱列表
-        experiment_dir: 實驗目錄
-        config: 配置字典
-    """
+    """生成實驗報告"""
     report_path = os.path.join(experiment_dir, 'report.md')
     
     # 建立報告內容
@@ -666,7 +556,7 @@ class Timer:
             
         self.elapsed = time.time() - self.start_time
         self.start_time = None
-        return self.elapsed
+        return self
     
     def __enter__(self):
         """上下文管理器開始"""
@@ -689,16 +579,7 @@ class Timer:
             return f"{seconds:.2f}s"
 
 def compute_confusion_matrix(pred_labels, gt_labels, num_classes=len(DEFECT_CLASSES)):
-    """計算混淆矩陣
-    
-    參數:
-        pred_labels: 預測標籤列表
-        gt_labels: 真實標籤列表
-        num_classes: 類別數量
-        
-    回傳:
-        confusion_matrix: 混淆矩陣
-    """
+    """計算混淆矩陣"""
     # 初始化混淆矩陣
     confusion_matrix = np.zeros((num_classes, num_classes), dtype=np.int32)
     
@@ -712,18 +593,9 @@ def compute_confusion_matrix(pred_labels, gt_labels, num_classes=len(DEFECT_CLAS
                 confusion_matrix[gt_class, pred_class] += 1
     
     return confusion_matrix
+
 def find_optimal_threshold(precisions, recalls, scores):
-    """查找最佳閾值，基於F1分數
-    
-    參數:
-        precisions: 精確率列表
-        recalls: 召回率列表
-        scores: 閾值分數列表
-        
-    回傳:
-        optimal_threshold: 最佳閾值
-        optimal_f1: 最佳F1分數
-    """
+    """查找最佳閾值，基於F1分數"""
     # 計算每個閾值的F1分數
     f1_scores = []
     
@@ -745,14 +617,7 @@ def find_optimal_threshold(precisions, recalls, scores):
     return optimal_threshold, optimal_f1
 
 def export_model(model, output_path, input_shape=(1, 3, 640, 640), format='onnx'):
-    """導出模型為不同格式
-    
-    參數:
-        model: 原始PyTorch模型
-        output_path: 輸出文件路徑
-        input_shape: 輸入形狀
-        format: 導出格式，支援'onnx'、'pt'
-    """
+    """導出模型為不同格式"""
     model.eval()
     
     # 確保輸出目錄存在
@@ -796,69 +661,16 @@ def export_model(model, output_path, input_shape=(1, 3, 640, 640), format='onnx'
         logger.error(f"不支援的導出格式: {format}")
 
 def optimize_model(model, config):
-    """優化模型，包括量化和剪枝
-    
-    參數:
-        model: 原始模型
-        config: 優化配置字典
-        
-    回傳:
-        optimized_model: 優化後的模型
-    """
-    # 深度複製模型
-    import copy
-    optimized_model = copy.deepcopy(model)
-    
-    # 應用量化(如果指定)
-    if config.get('quantize', False):
-        try:
-            import torch.quantization
-            
-            # 設定量化配置
-            quantize_config = torch.quantization.get_default_qconfig('fbgemm')
-            torch.quantization.prepare(optimized_model, inplace=True)
-            
-            # 執行靜態量化
-            # 這裡通常需要進行校準，但為了簡化，我們跳過這一步
-            torch.quantization.convert(optimized_model, inplace=True)
-            
-            logger.info("模型已成功量化")
-            
-        except Exception as e:
-            logger.error(f"量化模型時發生錯誤: {e}")
-    
-    # 應用剪枝(如果指定)
-    if config.get('prune', False):
-        try:
-            import torch.nn.utils.prune as prune
-            
-            # 獲取剪枝設定
-            prune_amount = config.get('prune_amount', 0.3)  # 默認剪枝30%權重
-            
-            # 對每個卷積層應用剪枝
-            for module in optimized_model.modules():
-                if isinstance(module, torch.nn.Conv2d):
-                    prune.l1_unstructured(module, name='weight', amount=prune_amount)
-                    # 使剪枝永久化
-                    prune.remove(module, 'weight')
-            
-            logger.info(f"模型已成功剪枝 ({prune_amount*100:.1f}%)")
-            
-        except Exception as e:
-            logger.error(f"剪枝模型時發生錯誤: {e}")
-    
-    return optimized_model
+    """優化模型，包括量化和剪枝"""
+    try:
+        from deploy.optimize import optimize_model as deploy_optimize
+        return deploy_optimize(model, config)
+    except ImportError:
+        logger.warning("無法導入deploy.optimize模組，僅返回原始模型")
+        return model
 
 def calculate_flops_and_params(model, input_shape=(1, 3, 640, 640)):
-    """計算模型的FLOPS和參數量
-    
-    參數:
-        model: PyTorch模型
-        input_shape: 輸入形狀
-        
-    回傳:
-        stats: 包含FLOPS和參數量的字典
-    """
+    """計算模型的FLOPS和參數量"""
     # 確保模型為eval模式
     model.eval()
     
@@ -903,12 +715,7 @@ def calculate_flops_and_params(model, input_shape=(1, 3, 640, 640)):
         return stats
 
 def plot_model_comparison(models_stats, output_path):
-    """繪製模型比較圖表
-    
-    參數:
-        models_stats: 模型統計字典，格式為 {'model_name': {'params': x, 'flops': y, ...}}
-        output_path: 圖表輸出路徑
-    """
+    """繪製模型比較圖表"""
     # 獲取模型名稱
     model_names = list(models_stats.keys())
     
@@ -942,78 +749,8 @@ def plot_model_comparison(models_stats, output_path):
     
     logger.info(f"模型比較圖表已儲存至: {output_path}")
 
-def visual_model_preds(image_path, models_dict, output_dir, conf_threshold=0.25):
-    """視覺化多個模型的預測結果比較
-    
-    參數:
-        image_path: 測試圖像路徑
-        models_dict: 模型字典，格式為 {'model_name': model}
-        output_dir: 輸出目錄
-        conf_threshold: 置信度閾值
-    """
-    # 讀取圖像
-    image = cv2.imread(image_path)
-    if image is None:
-        logger.error(f"無法讀取圖像: {image_path}")
-        return
-        
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # 獲取圖像名稱
-    image_name = os.path.basename(image_path)
-    
-    # 處理每個模型
-    for model_name, model in models_dict.items():
-        # 設定為評估模式
-        model.eval()
-        
-        # 複製原始圖像
-        image_copy = image.copy()
-        
-        # 預處理圖像
-        image_rgb = cv2.cvtColor(image_copy, cv2.COLOR_BGR2RGB)
-        image_tensor = preprocess_image(image_rgb)
-        
-        # 進行預測
-        with torch.no_grad():
-            outputs = model(image_tensor)
-        
-        # 處理預測結果
-        boxes, labels, scores = process_predictions(outputs, conf_threshold)
-        
-        # 繪製邊界框
-        result_image = draw_boxes(image_copy, boxes, labels, scores, conf_threshold)
-        
-        # 添加模型名稱標籤
-        cv2.putText(
-            result_image,
-            model_name,
-            (10, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            (0, 0, 255),
-            2,
-            cv2.LINE_AA
-        )
-        
-        # 儲存結果
-        output_path = os.path.join(output_dir, f"{model_name}_{image_name}")
-        cv2.imwrite(output_path, result_image)
-    
-    logger.info(f"多模型預測比較已儲存至: {output_dir}")
-
 def extract_inference_times(model, dataloader, device, num_runs=100):
-    """測量模型推理時間
-    
-    參數:
-        model: 要測試的模型
-        dataloader: 資料載入器
-        device: 運算設備
-        num_runs: 運行次數
-        
-    回傳:
-        inference_stats: 包含推理時間統計的字典
-    """
+    """測量模型推理時間"""
     # 設定為評估模式
     model.eval()
     model = model.to(device)
@@ -1067,12 +804,7 @@ def extract_inference_times(model, dataloader, device, num_runs=100):
     return inference_stats
 
 def plot_inference_comparison(models_stats, output_path):
-    """繪製模型推理時間比較圖表
-    
-    參數:
-        models_stats: 模型統計字典，格式為 {'model_name': {'avg_time': x, 'fps': y, ...}}
-        output_path: 圖表輸出路徑
-    """
+    """繪製模型推理時間比較圖表"""
     # 獲取模型名稱
     model_names = list(models_stats.keys())
     
@@ -1105,83 +837,6 @@ def plot_inference_comparison(models_stats, output_path):
     plt.close()
     
     logger.info(f"推理時間比較圖表已儲存至: {output_path}")
-
-def plot_feature_visualization(features, layer_names, output_path):
-    """視覺化模型中間特徵
-    
-    參數:
-        features: 特徵列表，每個元素是(batch_size, channels, height, width)的張量
-        layer_names: 層名稱列表
-        output_path: 輸出路徑
-    """
-    # 確定子圖數量
-    num_features = len(features)
-    rows = int(np.ceil(np.sqrt(num_features)))
-    cols = int(np.ceil(num_features / rows))
-    
-    # 建立圖表
-    plt.figure(figsize=(15, 12))
-    
-    for i, (feature, name) in enumerate(zip(features, layer_names)):
-        # 取第一個樣本的特徵
-        feature = feature[0].detach().cpu().numpy()
-        
-        # 計算特徵圖的平均值(跨通道)
-        feature_mean = np.mean(feature, axis=0)
-        
-        # 繪製子圖
-        plt.subplot(rows, cols, i+1)
-        plt.imshow(feature_mean, cmap='viridis')
-        plt.title(name)
-        plt.colorbar(fraction=0.046, pad=0.04)
-        plt.axis('off')
-    
-    # 調整佈局並儲存
-    plt.tight_layout()
-    plt.savefig(output_path)
-    plt.close()
-    
-    logger.info(f"特徵視覺化已儲存至: {output_path}")
-
-def get_class_weight(dataset, num_classes=len(DEFECT_CLASSES)):
-    """計算類別權重用於處理不平衡資料集
-    
-    參數:
-        dataset: 資料集實例
-        num_classes: 類別數量
-        
-    回傳:
-        class_weights: 類別權重張量
-    """
-    # 初始化類別計數
-    class_counts = np.zeros(num_classes)
-    
-    # 統計每個類別的樣本數量
-    for _, target in dataset:
-        labels = target['labels'].numpy()
-        for label in labels:
-            if 0 <= label < num_classes:
-                class_counts[label] += 1
-    
-    # 計算權重 (反比於樣本數量)
-    class_weights = np.zeros(num_classes)
-    
-    for i in range(num_classes):
-        if class_counts[i] > 0:
-            class_weights[i] = 1.0 / class_counts[i]
-        else:
-            class_weights[i] = 1.0  # 對於沒有樣本的類別，設為1
-    
-    # 正規化權重，使其總和為num_classes
-    if np.sum(class_weights) > 0:
-        class_weights = class_weights * (num_classes / np.sum(class_weights))
-    
-    # 轉換為PyTorch張量
-    weights_tensor = torch.FloatTensor(class_weights)
-    
-    logger.info(f"類別權重計算完成: {class_weights}")
-    
-    return weights_tensor
 
 if __name__ == "__main__":
     """測試工具函數"""
