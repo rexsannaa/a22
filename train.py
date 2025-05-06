@@ -447,6 +447,7 @@ def get_dataloader(config):
     import torch
     from torch.utils.data import Dataset, DataLoader
     from torchvision import transforms
+    import random
     
     class PCBDataset(Dataset):
         """PCB缺陷檢測資料集類別"""
@@ -670,6 +671,71 @@ def get_dataloader(config):
         images = torch.stack(images)
         
         return images, targets
+    
+    # 读取配置参数
+    dataset_path = config.get('dataset', {}).get('path', config.get('dataset_path', 'C:/Users/a/Desktop/conference/PCB_DATASET'))
+    batch_size = config.get('dataset', {}).get('batch_size', config.get('batch_size', 16))
+    img_size = config.get('dataset', {}).get('img_size', config.get('img_size', 640))
+    num_workers = config.get('dataset', {}).get('num_workers', config.get('num_workers', 4))
+    
+    try:
+        # 建立資料集
+        train_dataset = PCBDataset(
+            root_dir=dataset_path,
+            mode='train',
+            img_size=img_size,
+            use_augmentation=True
+        )
+        
+        val_dataset = PCBDataset(
+            root_dir=dataset_path,
+            mode='val',
+            img_size=img_size,
+            use_augmentation=False
+        )
+        
+        # 檢查資料集大小
+        if len(train_dataset) == 0:
+            logger.error(f"訓練資料集為空，請檢查資料集路徑與結構: {dataset_path}")
+            return None, None
+            
+        if len(val_dataset) == 0:
+            logger.warning("驗證資料集為空，將使用訓練資料集的子集進行驗證")
+            # 使用訓練資料集的一部分作為驗證集
+            dataset_size = len(train_dataset)
+            train_size = int(dataset_size * 0.8)
+            val_size = dataset_size - train_size
+            train_dataset, val_dataset = torch.utils.data.random_split(train_dataset, [train_size, val_size])
+        
+        # 建立資料載入器
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            collate_fn=collate_fn,
+            pin_memory=True
+        )
+        
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            collate_fn=collate_fn,
+            pin_memory=True
+        )
+        
+        logger.info(f"已建立訓練資料載入器 ({len(train_dataset)} 樣本) 和驗證資料載入器 ({len(val_dataset)} 樣本)")
+        
+        return train_loader, val_loader
+        
+    except Exception as e:
+        logger.error(f"建立資料載入器失敗: {e}")
+        # 添加错误追踪信息
+        import traceback
+        logger.error(f"错误详情: {traceback.format_exc()}")
+        return None, None
     #-------------------------------- 模型處理 --------------------------------#
 def get_teacher_model(config):
     """取得教師模型"""
