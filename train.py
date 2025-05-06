@@ -741,17 +741,24 @@ def get_teacher_model(config):
     """取得教師模型"""
     try:
         from ultralytics import YOLO
-        teacher_path = config.get('model', {}).get('teacher', 'yolov8l.pt')
-        model = YOLO(teacher_path)
         
-        # 設定類別數
-        if hasattr(model, 'model') and hasattr(model.model, 'model'):
-            num_classes = len(DEFECT_CLASSES)
-            # 設置模型的類別數量
-            model.model.model.nc = num_classes
-            logger.info(f"已設置教師模型類別數量為: {num_classes}")
+        # 檢查是否已有訓練好的教師模型
+        output_dir = Path(config.get('project', {}).get('output_dir', 'outputs'))
+        best_teacher_path = output_dir / 'weights' / "teacher_best.pt"
         
-        logger.info(f"已載入教師模型: {teacher_path}")
+        if os.path.exists(best_teacher_path):
+            logger.info(f"載入已訓練的教師模型: {best_teacher_path}")
+            model = YOLO(str(best_teacher_path))
+        else:
+            # 從頭開始初始化模型，而不是使用COCO預訓練權重
+            logger.info("初始化新的教師模型，將在PCB數據集上訓練")
+            model = YOLO('yolov8l.yaml')  # 只載入模型結構，不載入權重
+            
+            # 手動設定模型類別數量
+            model.model.model.nc = len(DEFECT_CLASSES)
+            model.names = {i: name for name, i in DEFECT_CLASSES.items()}
+        
+        logger.info(f"教師模型已設置為{len(DEFECT_CLASSES)}個PCB缺陷類別")
         return model
     except Exception as e:
         logger.error(f"載入教師模型失敗: {e}")
