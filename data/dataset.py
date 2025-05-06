@@ -19,11 +19,9 @@ import xml.etree.ElementTree as ET
 import torch
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
-from PIL import Image
 import albumentations as A
-from pathlib import Path
-import yaml
 import logging
+from pathlib import Path
 
 # 設定日誌
 logging.basicConfig(
@@ -52,25 +50,8 @@ class PCBDataset(Dataset):
                  transform=None,
                  use_augmentation=True,
                  mosaic_prob=0.5):
-        """
-        初始化PCB缺陷檢測資料集
-        
-        參數:
-            root_dir: 資料集根目錄
-            mode: 'train', 'val', 或 'test'
-            img_size: 模型輸入圖像大小
-            transform: 圖像轉換操作
-            use_augmentation: 是否使用資料增強
-            mosaic_prob: 使用Mosaic增強的機率
-        """
+        """初始化PCB缺陷檢測資料集"""
         self.root_dir = root_dir
-        
-        # 檢查根目錄是否存在
-        if not os.path.exists(root_dir):
-            logger.error(f"資料集根目錄不存在: {root_dir}")
-            logger.info(f"當前工作目錄: {os.getcwd()}")
-            raise FileNotFoundError(f"資料集根目錄不存在: {root_dir}")
-            
         self.img_size = img_size
         self.mode = mode
         self.imgs_path = os.path.join(root_dir, 'images')
@@ -78,52 +59,64 @@ class PCBDataset(Dataset):
         self.use_augmentation = use_augmentation and mode == 'train'
         self.mosaic_prob = mosaic_prob if self.use_augmentation else 0
         
-        # 檢查必要的子目錄是否存在
-        if not os.path.exists(self.imgs_path):
-            logger.error(f"圖像目錄不存在: {self.imgs_path}")
-            raise FileNotFoundError(f"圖像目錄不存在: {self.imgs_path}")
-            
-        if not os.path.exists(self.annotations_path):
-            logger.error(f"標註目錄不存在: {self.annotations_path}")
-            raise FileNotFoundError(f"標註目錄不存在: {self.annotations_path}")
+        # 檢查資料目錄
+        for path in [root_dir, self.imgs_path, self.annotations_path]:
+            if not os.path.exists(path):
+                logger.error(f"目錄不存在: {path}")
+                raise FileNotFoundError(f"目錄不存在: {path}")
         
-        # 讀取資料路徑
+        # 初始化資料路徑列表
         self.image_files = []
         self.annotation_files = []
         
-        # 從每個缺陷類型的資料夾載入圖片和標註
+        # 載入資料路徑
+        self._load_dataset_paths()
+        
+        # 分割訓練和驗證資料集
+        self._split_dataset()
+        
+        # 設定基本轉換和資料增強
+        self.transform = transform or self._get_default_transforms()
+        if self.use_augmentation:
+            self.augmentations = self._get_augmentations()
+        
+        # 載入旋轉角度資訊(如果有的話)
+        self.rotation_angles = self._load_rotation_info()
+        
+        logger.info(f"已載入 {mode} 模式的 {len(self.image_files)} 張圖片")
+    
+    def _load_dataset_paths(self):
+        """載入圖像和標註檔路徑"""
         for defect_type in DEFECT_CLASSES.keys():
-            # 嘗試不同的可能目錄名稱格式
-            possible_img_dirs = [
-                os.path.join(self.imgs_path, defect_type),  # 原始名稱
-                os.path.join(self.imgs_path, defect_type.replace('_', ' ')),  # 空格替換下劃線
-                os.path.join(self.imgs_path, defect_type.title().replace('_', '')),  # 駝峰命名
-                os.path.join(self.imgs_path, defect_type.upper()),  # 全大寫
-                os.path.join(self.imgs_path, defect_type.replace('_', '-'))  # 破折號替換下劃線
+            # 嘗試不同的可能目錄格式
+            img_dir_candidates = [
+                os.path.join(self.imgs_path, defect_type),
+                os.path.join(self.imgs_path, defect_type.replace('_', ' ')),
+                os.path.join(self.imgs_path, defect_type.title().replace('_', '')),
+                os.path.join(self.imgs_path, defect_type.upper()),
+                os.path.join(self.imgs_path, defect_type.replace('_', '-'))
             ]
             
-            possible_ann_dirs = [
-                os.path.join(self.annotations_path, defect_type),  # 原始名稱
-                os.path.join(self.annotations_path, defect_type.replace('_', ' ')),  # 空格替換下劃線
-                os.path.join(self.annotations_path, defect_type.title().replace('_', '')),  # 駝峰命名
-                os.path.join(self.annotations_path, defect_type.upper()),  # 全大寫
-                os.path.join(self.annotations_path, defect_type.replace('_', '-'))  # 破折號替換下劃線
+            ann_dir_candidates = [
+                os.path.join(self.annotations_path, defect_type),
+                os.path.join(self.annotations_path, defect_type.replace('_', ' ')),
+                os.path.join(self.annotations_path, defect_type.title().replace('_', '')),
+                os.path.join(self.annotations_path, defect_type.upper()),
+                os.path.join(self.annotations_path, defect_type.replace('_', '-'))
             ]
             
-            # 檢查所有可能的目錄組合
+            # 尋找有效的目錄組合
             found_valid_dir = False
-            for img_dir in possible_img_dirs:
+            for img_dir in img_dir_candidates:
                 if not os.path.exists(img_dir):
                     continue
-                    
-                for ann_dir in possible_ann_dirs:
+                
+                for ann_dir in ann_dir_candidates:
                     if not os.path.exists(ann_dir):
                         continue
-                        
-                    # 找到有效的目錄組合
-                    found_valid_dir = True
-                    logger.info(f"找到缺陷類型目錄: {img_dir} 和 {ann_dir}")
                     
+                    # 找到有效目錄，添加檔案
+                    found_valid_dir = True
                     for filename in os.listdir(img_dir):
                         if filename.endswith('.jpg'):
                             img_path = os.path.join(img_dir, filename)
@@ -132,20 +125,19 @@ class PCBDataset(Dataset):
                             if os.path.exists(ann_path):
                                 self.image_files.append(img_path)
                                 self.annotation_files.append(ann_path)
-                                
-                    break  # 找到有效組合後跳出內層循環
                     
+                    break  # 找到有效組合後跳出內層循環
+                
                 if found_valid_dir:
                     break  # 找到有效組合後跳出外層循環
-                    
+            
             if not found_valid_dir:
                 logger.warning(f"找不到缺陷類型 {defect_type} 的有效目錄")
         
-        # 如果沒有找到任何檔案，嘗試直接搜尋整個目錄
+        # 如果子目錄沒有找到檔案，嘗試在主目錄搜尋
         if len(self.image_files) == 0:
             logger.warning("未在子目錄中找到任何圖像，嘗試在主目錄中搜尋...")
             
-            # 檢查主圖像目錄
             if os.path.exists(self.imgs_path):
                 for filename in os.listdir(self.imgs_path):
                     if filename.endswith('.jpg'):
@@ -155,11 +147,10 @@ class PCBDataset(Dataset):
                         if os.path.exists(ann_path):
                             self.image_files.append(img_path)
                             self.annotation_files.append(ann_path)
-                            
-            logger.info(f"在主目錄中找到 {len(self.image_files)} 張圖像")
-        
-        # 分割訓練和驗證資料集
-        if mode != 'test' and len(self.image_files) > 0:
+    
+    def _split_dataset(self):
+        """分割訓練和驗證資料集"""
+        if self.mode != 'test' and len(self.image_files) > 0:
             indices = list(range(len(self.image_files)))
             random.seed(42)  # 確保可重複性
             random.shuffle(indices)
@@ -168,35 +159,26 @@ class PCBDataset(Dataset):
             train_indices = indices[:split]
             val_indices = indices[split:]
             
-            if mode == 'train':
+            if self.mode == 'train':
                 self.image_files = [self.image_files[i] for i in train_indices]
                 self.annotation_files = [self.annotation_files[i] for i in train_indices]
             else:  # val
                 self.image_files = [self.image_files[i] for i in val_indices]
                 self.annotation_files = [self.annotation_files[i] for i in val_indices]
-        
-        logger.info(f"已載入 {mode} 模式的 {len(self.image_files)} 張圖片")
-        
-        # 設定基本轉換
-        self.transform = transform
-        if self.transform is None:
-            self.transform = self._get_default_transforms()
-            
-        # 設定資料增強
-        if self.use_augmentation:
-            self.augmentations = self._get_augmentations()
-            
-        # 讀取旋轉角度資訊(如果有的話)
-        self.rotation_angles = {}
+    
+    def _load_rotation_info(self):
+        """載入旋轉角度資訊"""
+        rotation_angles = {}
         for defect_type in DEFECT_CLASSES.keys():
-            angles_file = os.path.join(root_dir, 'rotation', f"{defect_type}_angles.txt")
+            angles_file = os.path.join(self.root_dir, 'rotation', f"{defect_type}_angles.txt")
             if os.path.exists(angles_file):
                 with open(angles_file, 'r') as f:
                     for line in f:
                         parts = line.strip().split()
                         if len(parts) == 2:
                             img_id, angle = parts
-                            self.rotation_angles[img_id] = int(angle)
+                            rotation_angles[img_id] = int(angle)
+        return rotation_angles
     
     def __len__(self):
         """返回資料集大小"""
@@ -219,42 +201,35 @@ class PCBDataset(Dataset):
         if img is None:
             logger.warning(f"無法讀取圖像: {img_path}，使用空白圖像替代")
             img = np.zeros((self.img_size, self.img_size, 3), dtype=np.uint8)
-            
+        
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
-        # 確保圖片尺寸一致
-        h, w = img.shape[:2]
-        if h != self.img_size or w != self.img_size:
-            # 記錄原始尺寸，用於調整邊界框
-            orig_h, orig_w = h, w
-            # 調整圖片尺寸
-            img = cv2.resize(img, (self.img_size, self.img_size))
-            # 更新長寬比例，用於後續邊界框調整
+        orig_h, orig_w = img.shape[:2]
+        
+        # 調整圖片尺寸
+        if orig_h != self.img_size or orig_w != self.img_size:
             h_ratio, w_ratio = self.img_size / orig_h, self.img_size / orig_w
+            img = cv2.resize(img, (self.img_size, self.img_size))
         
         # 讀取標註
         ann_path = self.annotation_files[idx]
-        boxes, labels = self._parse_annotation(ann_path)
-
-        # 調整邊界框坐標以匹配調整後的圖片尺寸
-        if 'h_ratio' in locals() and 'w_ratio' in locals():
+        boxes, labels = self._parse_annotation(ann_path, orig_w, orig_h)
+        
+        # 調整邊界框坐標
+        if 'h_ratio' in locals() and 'w_ratio' in locals() and boxes:
             adjusted_boxes = []
             for box in boxes:
                 xmin, ymin, xmax, ymax = box
-                # 如果坐標是相對的 (0-1範圍)，則不需要調整
-                if max(xmin, ymin, xmax, ymax) <= 1.0:
-                    adjusted_boxes.append(box)
-                else:
-                    # 將絕對坐標轉換為相對坐標
+                # 只調整絕對坐標，相對坐標不需調整
+                if max(xmin, ymin, xmax, ymax) > 1.0:
                     xmin = (xmin * w_ratio) / self.img_size
                     ymin = (ymin * h_ratio) / self.img_size
                     xmax = (xmax * w_ratio) / self.img_size
                     ymax = (ymax * h_ratio) / self.img_size
-                    adjusted_boxes.append([xmin, ymin, xmax, ymax])
+                adjusted_boxes.append([xmin, ymin, xmax, ymax])
             boxes = adjusted_boxes
         
         # 應用資料增強
-        if self.use_augmentation:
+        if self.use_augmentation and self.augmentations and boxes:
             transformed = self.augmentations(image=img, bboxes=boxes, class_labels=labels)
             img = transformed['image']
             boxes = transformed['bboxes']
@@ -263,19 +238,14 @@ class PCBDataset(Dataset):
         # 應用基本轉換
         img = self.transform(img)
         
-        # 將邊界框和標籤轉換為張量
-        if len(boxes) > 0:
-            boxes = torch.as_tensor(boxes, dtype=torch.float32)
-            labels = torch.as_tensor(labels, dtype=torch.int64)
-        else:
-            # 如果沒有邊界框，返回空張量
-            boxes = torch.zeros((0, 4), dtype=torch.float32)
-            labels = torch.zeros(0, dtype=torch.int64)
+        # 準備張量
+        boxes_tensor = torch.as_tensor(boxes, dtype=torch.float32) if boxes else torch.zeros((0, 4), dtype=torch.float32)
+        labels_tensor = torch.as_tensor(labels, dtype=torch.int64) if labels else torch.zeros(0, dtype=torch.int64)
         
         # 構建目標字典
         target = {
-            'boxes': boxes,
-            'labels': labels,
+            'boxes': boxes_tensor,
+            'labels': labels_tensor,
             'image_id': torch.tensor([idx])
         }
         
@@ -301,12 +271,9 @@ class PCBDataset(Dataset):
             
             img = cv2.imread(img_path)
             if img is None:
-                logger.warning(f"無法讀取圖像: {img_path}，使用空白圖像替代")
                 img = np.zeros((self.img_size, self.img_size, 3), dtype=np.uint8)
                 
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            
-            # 獲取原始尺寸
             orig_h, orig_w = img.shape[:2]
             
             # 確定位置(左上、右上、左下、右下)
@@ -320,11 +287,10 @@ class PCBDataset(Dataset):
             mosaic_img[y_offset:y_offset+self.img_size, x_offset:x_offset+self.img_size] = resized_img
             
             # 讀取標註
-            boxes, labels = self._parse_annotation(ann_path)
+            boxes, labels = self._parse_annotation(ann_path, orig_w, orig_h)
             
             # 調整邊界框坐標
-            if len(boxes) > 0:
-                # 處理相對坐標的邊界框
+            if boxes:
                 adjusted_boxes = []
                 for box in boxes:
                     xmin, ymin, xmax, ymax = box
@@ -347,35 +313,27 @@ class PCBDataset(Dataset):
         final_boxes = []
         for box in combined_boxes:
             xmin, ymin, xmax, ymax = box
-            final_boxes.append([
-                xmin * ratio, ymin * ratio, 
-                xmax * ratio, ymax * ratio
-            ])
+            final_boxes.append([xmin * ratio, ymin * ratio, xmax * ratio, ymax * ratio])
         
         # 應用基本轉換
         mosaic_img = self.transform(mosaic_img)
         
-        # 將邊界框和標籤轉換為張量
-        if len(final_boxes) > 0:
-            boxes = torch.as_tensor(final_boxes, dtype=torch.float32)
-            labels = torch.as_tensor(combined_labels, dtype=torch.int64)
-        else:
-            boxes = torch.zeros((0, 4), dtype=torch.float32)
-            labels = torch.zeros(0, dtype=torch.int64)
+        # 準備張量
+        boxes_tensor = torch.as_tensor(final_boxes, dtype=torch.float32) if final_boxes else torch.zeros((0, 4), dtype=torch.float32)
+        labels_tensor = torch.as_tensor(combined_labels, dtype=torch.int64) if combined_labels else torch.zeros(0, dtype=torch.int64)
         
         # 構建目標字典
         target = {
-            'boxes': boxes,
-            'labels': labels,
+            'boxes': boxes_tensor,
+            'labels': labels_tensor,
             'image_id': torch.tensor([idx])
         }
         
         return mosaic_img, target
     
-    def _parse_annotation(self, ann_path):
+    def _parse_annotation(self, ann_path, img_width, img_height):
         """解析XML標註檔"""
         if not os.path.exists(ann_path):
-            logger.warning(f"標註檔不存在: {ann_path}")
             return [], []
             
         try:
@@ -385,11 +343,10 @@ class PCBDataset(Dataset):
             # 獲取圖片尺寸
             size = root.find('size')
             if size is None:
-                logger.warning(f"標註檔缺少尺寸資訊: {ann_path}")
-                return [], []
-                
-            img_width = int(size.find('width').text)
-            img_height = int(size.find('height').text)
+                w, h = img_width, img_height
+            else:
+                w = int(size.find('width').text)
+                h = int(size.find('height').text)
             
             boxes = []
             labels = []
@@ -408,10 +365,10 @@ class PCBDataset(Dataset):
                     continue
                     
                 # 確保使用相對坐標 (0-1範圍)
-                xmin = float(bbox.find('xmin').text) / img_width
-                ymin = float(bbox.find('ymin').text) / img_height
-                xmax = float(bbox.find('xmax').text) / img_width
-                ymax = float(bbox.find('ymax').text) / img_height
+                xmin = float(bbox.find('xmin').text) / w
+                ymin = float(bbox.find('ymin').text) / h
+                xmax = float(bbox.find('xmax').text) / w
+                ymax = float(bbox.find('ymax').text) / h
                 
                 # 確保邊界框坐標有效
                 if xmin >= xmax or ymin >= ymax:
@@ -428,11 +385,10 @@ class PCBDataset(Dataset):
     def _get_default_transforms(self):
         """獲取默認的圖像轉換"""
         return transforms.Compose([
-            transforms.ToPILImage(),  # 先轉換為 PIL 圖像
-            transforms.Resize((self.img_size, self.img_size)),  # 調整大小為相同尺寸
+            transforms.ToPILImage(),
+            transforms.Resize((self.img_size, self.img_size)),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                                std=[0.229, 0.224, 0.225])
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
     
     def _get_augmentations(self):
@@ -446,6 +402,18 @@ class PCBDataset(Dataset):
             A.GaussianBlur(blur_limit=3, p=0.1),
         ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['class_labels']))
 
+def collate_fn(batch):
+    """自定義批次組合函數，處理不同尺寸的圖片"""
+    images, targets = [], []
+    
+    for img, tgt in batch:
+        images.append(img if isinstance(img, torch.Tensor) else torch.from_numpy(img).permute(2, 0, 1))
+        targets.append(tgt)
+    
+    # 堆疊圖像
+    images = torch.stack(images)
+    
+    return images, targets
 
 def get_dataloader(config):
     """建立資料載入器
@@ -463,10 +431,9 @@ def get_dataloader(config):
     img_size = config.get('dataset', {}).get('img_size', config.get('img_size', 640))
     num_workers = config.get('dataset', {}).get('num_workers', config.get('num_workers', 4))
     
-    # 檢查資料集根目錄是否存在
+    # 檢查資料集根目錄
     if not os.path.exists(root_dir):
         logger.error(f"資料集根目錄不存在: {root_dir}")
-        logger.info(f"當前工作目錄: {os.getcwd()}")
         raise FileNotFoundError(f"資料集根目錄不存在: {root_dir}")
     
     try:
@@ -491,7 +458,7 @@ def get_dataloader(config):
             raise ValueError("訓練資料集為空")
             
         if len(val_dataset) == 0:
-            logger.warning(f"驗證資料集為空，將使用訓練資料集的子集進行驗證")
+            logger.warning("驗證資料集為空，將使用訓練資料集的子集進行驗證")
             # 使用訓練資料集的一部分作為驗證集
             dataset_size = len(train_dataset)
             train_size = int(dataset_size * 0.8)
@@ -525,39 +492,6 @@ def get_dataloader(config):
         logger.error(f"建立資料載入器失敗: {e}")
         raise
 
-
-def collate_fn(batch):
-    """自定義批次組合函數，處理不同尺寸的圖片"""
-    images = []
-    targets = []
-    
-    for img, tgt in batch:
-        # 如果輸入已經是張量，則直接使用
-        if isinstance(img, torch.Tensor):
-            images.append(img)
-        else:
-            # 否則轉換為張量
-            images.append(torch.from_numpy(img).permute(2, 0, 1))
-        targets.append(tgt)
-    
-    # 找出最大的寬度和高度
-    max_width = max(img.shape[2] for img in images)
-    max_height = max(img.shape[1] for img in images)
-    
-    # 填充所有圖片到相同大小
-    padded_images = []
-    for img in images:
-        c, h, w = img.shape
-        padded_img = torch.zeros((c, max_height, max_width), dtype=img.dtype)
-        padded_img[:, :h, :w] = img
-        padded_images.append(padded_img)
-    
-    # 堆疊填充後的圖片
-    images = torch.stack(padded_images)
-    
-    return images, targets
-
-
 if __name__ == "__main__":
     """測試資料集模組功能"""
     # 載入配置
@@ -573,8 +507,7 @@ if __name__ == "__main__":
         
         # 驗證資料載入
         for i, (images, targets) in enumerate(train_loader):
-            if i > 0:
-                break
+            if i > 0: break
                 
             logger.info(f"批次 {i+1}:")
             logger.info(f"圖像形狀: {images.shape}")
