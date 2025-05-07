@@ -1332,6 +1332,10 @@ def train_teacher_model(teacher_model, train_loader, val_loader, config):
     
     # 使用混合精度訓練
     use_amp = config.get('training', {}).get('use_amp', True)
+    # 檢查CUDA是否可用，不可用時禁用AMP
+    if use_amp and not torch.cuda.is_available():
+        logger.warning("CUDA不可用，已自動禁用混合精度訓練")
+        use_amp = False
     scaler = GradScaler(enabled=use_amp)
     
     # 訓練參數
@@ -1376,22 +1380,36 @@ def train_teacher_model(teacher_model, train_loader, val_loader, config):
                 optimizer.zero_grad()
                 
                 # 混合精度訓練
-                with autocast(enabled=use_amp):
-                    # 前向傳播
-                    outputs = teacher_model(images)
+                optimizer.zero_grad()  # 確保在每次迭代前清除梯度
+
+                try:
+                    with autocast(enabled=use_amp):
+                        # 前向傳播
+                        outputs = teacher_model(images)
+                        
+                        # 計算損失
+                        if hasattr(teacher_model, 'model') and hasattr(teacher_model.model, 'model') and hasattr(teacher_model.model.model, 'loss'):
+                            loss_dict = teacher_model.model.model.loss(outputs, targets)
+                            loss = sum(loss_dict.values())
+                        else:
+                            # 如果沒有原生損失函數，使用一個基本的損失
+                            loss = torch.tensor(0.1, device=device, requires_grad=True)
                     
-                    # 計算損失
-                    if hasattr(teacher_model, 'model') and hasattr(teacher_model.model, 'model') and hasattr(teacher_model.model.model, 'loss'):
-                        loss_dict = teacher_model.model.model.loss(outputs, targets)
-                        loss = sum(loss_dict.values())
+                    # 反向傳播
+                    if use_amp:
+                        scaler.scale(loss).backward()
+                        scaler.step(optimizer)
+                        scaler.update()
                     else:
-                        # 如果沒有原生損失函數，使用一個基本的損失
-                        loss = torch.tensor(0.1, device=device, requires_grad=True)
-                
-                # 反向傳播
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
+                        loss.backward()
+                        optimizer.step()
+                except Exception as e:
+                    logger.error(f"訓練步驟發生錯誤: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    # 如果發生錯誤，暫時禁用AMP並繼續
+                    use_amp = False
+                    continue
                 
                 # 更新進度條
                 epoch_loss += loss.item()

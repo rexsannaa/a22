@@ -501,7 +501,6 @@ def get_teacher_model(config):
     """取得教師模型"""
     try:
         from ultralytics import YOLO
-        import yaml
         
         # 檢查是否已有訓練好的教師模型
         output_dir = Path(config.get('project', {}).get('output_dir', 'outputs'))
@@ -510,49 +509,29 @@ def get_teacher_model(config):
         if os.path.exists(best_teacher_path):
             logger.info(f"載入已訓練的教師模型: {best_teacher_path}")
             model = YOLO(str(best_teacher_path))
-        else:
-            # 從頭開始初始化模型
-            logger.info("初始化新的教師模型，將從頭訓練於PCB數據集上")
             
-            # 使用純 YAML 初始化模型
-            model = YOLO('yolov8l.yaml')
-            
-            # 修改模型的類別數 (使用正確的屬性存取方式)
-            model.model.nc = len(DEFECT_CLASSES)
-            
-            # 創建適合PCB檢測的資料配置
-            data_yaml = {
-                'path': config.get('dataset', {}).get('path', 'C:/Users/a/Desktop/conference/PCB_DATASET'),
-                'train': 'images',  # 訓練資料夾
-                'val': 'images',    # 驗證資料夾 
-                'names': {i: name for i, name in enumerate(DEFECT_CLASSES.keys())}
-            }
-            
-            # 將資料配置保存為臨時檔案
-            data_path = output_dir / 'pcb_data.yaml'
-            os.makedirs(os.path.dirname(data_path), exist_ok=True)
-            
-            with open(data_path, 'w') as f:
-                yaml.dump(data_yaml, f)
+            # 確保模型使用正確的類別
+            if hasattr(model.model, 'names'):
+                model.model.names = list(DEFECT_CLASSES.keys())
                 
-            logger.info(f"已創建PCB資料配置: {data_path}")
-            
-            # 使用配置檔案指定類別 (間接設置)
-            if hasattr(model, 'overrides'):
-                model.overrides['data'] = str(data_path)
-                model.overrides['task'] = 'detect'
-                model.overrides['model'] = 'yolov8l.yaml'
-                model.overrides['imgsz'] = config.get('dataset', {}).get('img_size', 640)
-                model.overrides['batch'] = config.get('dataset', {}).get('batch_size', 16)
-                model.overrides['epochs'] = config.get('teacher_training', {}).get('epochs', 50)
-            
             # 確保檢測頭匹配類別數
             if hasattr(model.model, 'model'):
                 for m in model.model.model:
                     if hasattr(m, 'nc'):
                         m.nc = len(DEFECT_CLASSES)
+        else:
+            # 從頭開始初始化模型 - 明確使用YAML而非PT以避免預訓練權重
+            logger.info("初始化新的教師模型，將從頭訓練於PCB數據集上")
+            model = YOLO('yolov8l.yaml')  # 使用yaml而非pt文件
             
-            logger.info("成功初始化教師模型")
+            # 設置類別名稱和數量
+            model.model.names = list(DEFECT_CLASSES.keys())
+            model.model.nc = len(DEFECT_CLASSES)
+            
+            # 確保檢測頭匹配類別數
+            for m in model.model.model:
+                if hasattr(m, 'nc'):
+                    m.nc = len(DEFECT_CLASSES)
         
         # 停用驗證和數據集下載
         if hasattr(model, 'args'):
@@ -570,7 +549,6 @@ def get_teacher_model(config):
         return model
     except Exception as e:
         logger.error(f"載入教師模型失敗: {e}")
-        # 添加詳細的錯誤信息
         import traceback
         logger.error(f"錯誤詳情: {traceback.format_exc()}")
         import sys
