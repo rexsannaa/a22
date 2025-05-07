@@ -761,14 +761,22 @@ def get_teacher_model(config):
             
             # 修改模型的類別數 (使用正確的屬性存取方式)
             model.model.nc = len(DEFECT_CLASSES)
-            
+
             # 更新類別名稱 (使用正確的方式)
-            if hasattr(model, 'names'):
-                model.names = list(DEFECT_CLASSES.keys())
+            if hasattr(model, 'names') and isinstance(getattr(model, 'names', None), list):
+                # 使用項目賦值而不是直接賦值
+                for i, name in enumerate(DEFECT_CLASSES.keys()):
+                    if i < len(model.names):
+                        model.names[i] = name
+            elif hasattr(model.model, 'names') and isinstance(getattr(model.model, 'names', None), list):
+                # 嘗試修改 model.model.names
+                for i, name in enumerate(DEFECT_CLASSES.keys()):
+                    if i < len(model.model.names):
+                        model.model.names[i] = name
             else:
-                # 如果直接設置不可行，嘗試使用其他方式
-                # 例如設置模型的參數字典
-                model.model.names = list(DEFECT_CLASSES.keys())
+                # 如果以上方法都不可行，創建自定義屬性
+                logger.warning("無法設置模型類別名稱，將使用自定義屬性")
+                model._pcb_class_names = list(DEFECT_CLASSES.keys())
             
             # 確保檢測頭匹配類別數
             if hasattr(model.model, 'model'):
