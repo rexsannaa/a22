@@ -759,9 +759,16 @@ def get_teacher_model(config):
             # 使用 yaml 檔案而不是 .pt 來避免載入 COCO 預訓練權重
             model = YOLO('yolov8l.yaml')
             
-            # 修改模型的類別數
+            # 修改模型的類別數 (使用正確的屬性存取方式)
             model.model.nc = len(DEFECT_CLASSES)
-            model.names = list(DEFECT_CLASSES.keys())
+            
+            # 更新類別名稱 (使用正確的方式)
+            if hasattr(model, 'names'):
+                model.names = list(DEFECT_CLASSES.keys())
+            else:
+                # 如果直接設置不可行，嘗試使用其他方式
+                # 例如設置模型的參數字典
+                model.model.names = list(DEFECT_CLASSES.keys())
             
             # 確保檢測頭匹配類別數
             if hasattr(model.model, 'model'):
