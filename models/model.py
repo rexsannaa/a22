@@ -498,14 +498,59 @@ class DistillationLoss(nn.Module):
         return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 def get_teacher_model(config):
-    """獲取教師模型"""
-    num_classes = len(DEFECT_CLASSES)
-    pretrained = config.get('model', {}).get('pretrained', True)
-    
-    teacher = TeacherModel(num_classes=num_classes, pretrained=pretrained)
-    logger.info(f"已建立教師模型，類別數: {num_classes}")
-    
-    return teacher
+    """取得教師模型"""
+    try:
+        from ultralytics import YOLO
+        
+        # 檢查是否已有訓練好的教師模型
+        output_dir = Path(config.get('project', {}).get('output_dir', 'outputs'))
+        best_teacher_path = output_dir / 'weights' / "teacher_best.pt"
+        
+        if os.path.exists(best_teacher_path):
+            logger.info(f"載入已訓練的教師模型: {best_teacher_path}")
+            model = YOLO(str(best_teacher_path))
+        else:
+            # 從頭開始初始化模型
+            logger.info("初始化新的教師模型，將從頭訓練於PCB數據集上")
+            
+            # 使用純 YAML 初始化模型
+            model = YOLO('yolov8l.yaml')
+            
+            # 創建適合PCB檢測的資料配置
+            data_yaml = {
+                'path': config.get('dataset', {}).get('path', 'C:/Users/a/Desktop/conference/PCB_DATASET'),
+                'train': 'images',  # 訓練資料夾
+                'val': 'images',    # 驗證資料夾 
+                'names': {i: name for i, name in enumerate(DEFECT_CLASSES.keys())}
+            }
+            
+            # 將資料配置保存為臨時檔案
+            data_path = Path(output_dir) / 'pcb_data.yaml'
+            os.makedirs(os.path.dirname(data_path), exist_ok=True)
+            
+            with open(data_path, 'w') as f:
+                yaml.dump(data_yaml, f)
+                
+            logger.info(f"已創建PCB資料配置: {data_path}")
+            
+            # 使用配置檔案指定類別 (間接設置)
+            model.overrides['data'] = str(data_path)
+            model.overrides['task'] = 'detect'
+            model.overrides['model'] = 'yolov8l.yaml'
+            model.overrides['imgsz'] = config.get('dataset', {}).get('img_size', 640)
+            model.overrides['batch'] = config.get('dataset', {}).get('batch_size', 16)
+            model.overrides['epochs'] = config.get('teacher_training', {}).get('epochs', 50)
+            
+            logger.info("成功初始化教師模型")
+        
+        logger.info(f"教師模型已設置，準備用於PCB缺陷檢測")
+        return model
+    except Exception as e:
+        logger.error(f"載入教師模型失敗: {e}")
+        # 添加詳細的錯誤信息
+        import traceback
+        logger.error(f"錯誤詳情: {traceback.format_exc()}")
+        sys.exit(1)
 
 def get_student_model(config):
     """獲取學生模型"""
