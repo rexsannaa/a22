@@ -1272,11 +1272,25 @@ class DistillationManager:
         # 儲存最新檢查點
         checkpoint_path = self.output_dir / f"student_epoch_{epoch+1}.pt"
         
-        # 根據模型類型選擇保存方法
-        if hasattr(self.student_model, 'model') and hasattr(self.student_model.model, 'save'):
+        # 根據模型類型選擇保存方法   
+        if hasattr(self.student_model, 'save'):
+            self.student_model.save(checkpoint_path)
+        elif hasattr(self.student_model, 'model') and hasattr(self.student_model.model, 'save') and callable(self.student_model.model.save):
             self.student_model.model.save(checkpoint_path)
         else:
-            torch.save(self.student_model.state_dict(), checkpoint_path)
+            # 使用更安全的保存方式
+            try:
+                # 如果是YOLO模型，使用其特殊的保存方法
+                if hasattr(self.student_model, 'model') and hasattr(self.student_model.model, 'model'):
+                    state_dict = self.student_model.model.model.state_dict()
+                    torch.save(state_dict, checkpoint_path)
+                else:
+                    torch.save(self.student_model.state_dict(), checkpoint_path)
+                logger.info(f"已保存學生模型檢查點: {checkpoint_path}")
+            except Exception as e:
+                logger.error(f"保存學生模型檢查點失敗: {e}")
+                # 嘗試直接保存整個模型對象
+                torch.save(self.student_model, checkpoint_path)
             
         logger.info(f"已儲存學生模型檢查點：{checkpoint_path}")
         
@@ -1285,10 +1299,24 @@ class DistillationManager:
             best_map = current_map
             best_model_path = self.output_dir / "student_best.pt"
             
-            if hasattr(self.student_model, 'model') and hasattr(self.student_model.model, 'save'):
+            if hasattr(self.student_model, 'save'):
+                self.student_model.save(best_model_path)
+            elif hasattr(self.student_model, 'model') and hasattr(self.student_model.model, 'save') and callable(self.student_model.model.save):
                 self.student_model.model.save(best_model_path)
             else:
-                torch.save(self.student_model.state_dict(), best_model_path)
+                # 使用更安全的保存方式
+                try:
+                    # 如果是YOLO模型，使用其特殊的保存方法
+                    if hasattr(self.student_model, 'model') and hasattr(self.student_model.model, 'model'):
+                        state_dict = self.student_model.model.model.state_dict()
+                        torch.save(state_dict, best_model_path)
+                    else:
+                        torch.save(self.student_model.state_dict(), best_model_path)
+                    logger.info(f"已保存最佳學生模型: {best_model_path}")
+                except Exception as e:
+                    logger.error(f"保存最佳學生模型失敗: {e}")
+                    # 嘗試直接保存整個模型對象
+                    torch.save(self.student_model, best_model_path)
                 
             logger.info(f"發現更好的學生模型 (mAP: {best_map:.4f})，已儲存至：{best_model_path}")
         
@@ -1534,19 +1562,47 @@ def train_teacher_model(teacher_model, train_loader, val_loader, config):
                 best_model_path = weights_dir / "teacher_best.pt"
                 
                 # 儲存模型，根據不同模型類型調整
-                if hasattr(teacher_model, 'model') and hasattr(teacher_model.model, 'save'):
+                if hasattr(teacher_model, 'save'):
+                    teacher_model.save(best_model_path)
+                elif hasattr(teacher_model, 'model') and hasattr(teacher_model.model, 'save') and callable(teacher_model.model.save):
                     teacher_model.model.save(best_model_path)
                 else:
-                    torch.save(teacher_model.state_dict(), best_model_path)
+                    # 使用更安全的保存方式
+                    try:
+                        # 如果是YOLO模型，使用其特殊的保存方法
+                        if hasattr(teacher_model, 'model') and hasattr(teacher_model.model, 'model'):
+                            state_dict = teacher_model.model.model.state_dict()
+                            torch.save(state_dict, best_model_path)
+                        else:
+                            torch.save(teacher_model.state_dict(), best_model_path)
+                        logger.info(f"已保存最佳模型至: {best_model_path}")
+                    except Exception as e:
+                        logger.error(f"保存最佳模型失敗: {e}")
+                        # 嘗試直接保存整個模型對象
+                        torch.save(teacher_model, best_model_path)
                 
                 logger.info(f"發現更好的模型 (mAP: {best_map:.4f})，已儲存至: {best_model_path}")
             
             # 儲存當前檢查點
             checkpoint_path = weights_dir / f"teacher_epoch_{epoch+1}.pt"
-            if hasattr(teacher_model, 'model') and hasattr(teacher_model.model, 'save'):
+            if hasattr(teacher_model, 'save'):
+                teacher_model.save(checkpoint_path)
+            elif hasattr(teacher_model, 'model') and hasattr(teacher_model.model, 'save') and callable(teacher_model.model.save):
                 teacher_model.model.save(checkpoint_path)
             else:
-                torch.save(teacher_model.state_dict(), checkpoint_path)
+                # 使用更安全的保存方式，避免嘗試調用列表
+                try:
+                    # 如果是YOLO模型，使用其特殊的保存方法
+                    if hasattr(teacher_model, 'model') and hasattr(teacher_model.model, 'model'):
+                        state_dict = teacher_model.model.model.state_dict()
+                        torch.save(state_dict, checkpoint_path)
+                    else:
+                        torch.save(teacher_model.state_dict(), checkpoint_path)
+                    logger.info(f"已保存模型檢查點至: {checkpoint_path}")
+                except Exception as e:
+                    logger.error(f"保存模型檢查點失敗: {e}")
+                    # 嘗試直接保存整個模型對象
+                    torch.save(teacher_model, checkpoint_path)
     
     # 計算總訓練時間
     total_time = total_timer.stop().format_time()

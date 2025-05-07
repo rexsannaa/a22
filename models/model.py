@@ -523,6 +523,14 @@ def get_teacher_model(config):
             # 從頭開始初始化模型 - 明確使用YAML而非PT以避免預訓練權重
             logger.info("初始化新的教師模型，將從頭訓練於PCB數據集上")
             model = YOLO('yolov8l.yaml')  # 使用yaml而非pt文件
+
+            # 明確禁用預訓練權重
+            if hasattr(model.model, 'pretrained'):
+                model.model.pretrained = False
+                
+            # 設置參數初始化
+            if hasattr(model.model, 'initialize_weights'):
+                model.model.initialize_weights()
             
             # 設置類別名稱和數量
             model.model.names = list(DEFECT_CLASSES.keys())
